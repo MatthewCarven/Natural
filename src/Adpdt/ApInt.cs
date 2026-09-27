@@ -132,6 +132,25 @@ public readonly partial struct ApInt : IEquatable<ApInt>, IComparable<ApInt>, IC
     public static ApInt operator *(ApInt a, ApInt b) =>
         new(Magnitude.Multiply(a.Mag, b.Mag), a._negative ^ b._negative);
 
+    /// <summary>
+    /// Quotient and remainder, truncating toward zero like C#'s own / and %: the
+    /// quotient's sign is the XOR of the operands' signs and the remainder takes the
+    /// dividend's sign. So -7 / 2 is -3 remainder -1, and always
+    /// dividend == quotient * divisor + remainder, with |remainder| &lt; |divisor|.
+    /// </summary>
+    /// <exception cref="DivideByZeroException">The divisor is zero.</exception>
+    public static (ApInt Quotient, ApInt Remainder) DivRem(ApInt dividend, ApInt divisor)
+    {
+        uint[] quotient = Magnitude.DivRem(dividend.Mag, divisor.Mag, out uint[] remainder);
+        return (new(quotient, dividend._negative ^ divisor._negative), new(remainder, dividend._negative));
+    }
+
+    /// <summary>Truncating division, like C#: -7 / 2 is -3. (Note -7 &gt;&gt; 1 is -4: shifts floor.)</summary>
+    public static ApInt operator /(ApInt a, ApInt b) => DivRem(a, b).Quotient;
+
+    /// <summary>Remainder with the dividend's sign, like C#: -7 % 2 is -1.</summary>
+    public static ApInt operator %(ApInt a, ApInt b) => DivRem(a, b).Remainder;
+
     public static ApInt operator ++(ApInt a) => a + One;
     public static ApInt operator --(ApInt a) => a - One;
 

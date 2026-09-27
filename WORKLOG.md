@@ -32,3 +32,27 @@ Not a git repo yet — flagged to Matthew.
 
 The class is named for what it operates on (the magnitude half of sign + magnitude)
 rather than how. File is now `src/Adpdt/Magnitude.cs`; no behaviour change.
+
+## 2026-09-27 — Division; float design agreed
+
+Initial commit `34eef95` after Matthew's `git init` (no remote yet).
+
+**Division**: `ApInt.DivRem` (tuple), `/`, `%`, truncating like C# — quotient sign
+is the XOR of the signs, remainder takes the dividend's. `Magnitude.DivRem` is
+restoring binary long division: shift the dividend's bits into a running
+remainder one at a time, subtract the divisor (a + ~b + 1 again) whenever it
+fits, write a 1 in that quotient place. The remainder lives in one array of
+divisor-length + 1 and is worked on in place. Divide by zero throws
+`DivideByZeroException`; `long.MinValue / -1` is just 2^63 here.
+
+Tests 50 → 59, checked against C#'s own `long` `/` and `%` as well as
+`BigInteger`, plus: repeated `% 10` agrees with double dabble (two independent
+routes to the decimal digits). Mutation check: `>= 0` → `> 0` in the "does it
+fit" comparison fails 7. Speed: 200,000-bit / 100,000-bit in ~0.3 s.
+
+**Floating point design** (discussed with Matthew, his choice): arbitrary precision
+but IEEE-style and byte-aligned. Matthew proposed "max / 2" as an exponent bias —
+which is exactly IEEE 754's bias (`max >> 1` = `0111…1`: 127, 1023, 16383). Plan:
+MPFR-style `ApFloat` in memory (signed `long` exponent, no bias needed), correctly
+rounded like IEEE, and IEEE `binary{k}` as the byte format, where the bias lives;
+k any multiple of 32 from 128 via the IEEE 754-2008 width formula. Details in TODO.

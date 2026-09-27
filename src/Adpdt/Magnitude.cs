@@ -130,6 +130,78 @@ internal static class Magnitude
     }
 
     /// <summary>
+    /// Binary long division (restoring) -- the pencil-and-paper method, in base 2.
+    /// Bring the dividend's bits down one at a time, top first, into a running
+    /// remainder. Whenever the remainder is at least the divisor, subtract the
+    /// divisor and write a 1 in that place of the quotient; otherwise write a 0.
+    /// Every quotient digit is 0 or 1, so unlike base 10 there's no guessing
+    /// how many times the divisor goes in: it either fits once or not at all.
+    /// </summary>
+    internal static uint[] DivRem(uint[] dividend, uint[] divisor, out uint[] remainder)
+    {
+        if (divisor.Length == 0) throw new DivideByZeroException();
+        if (Compare(dividend, divisor) < 0)
+        {
+            remainder = dividend;
+            return Empty;
+        }
+
+        var quotient = new uint[dividend.Length];
+
+        // Before each step the remainder is below the divisor, so after shifting a
+        // bit in it's below twice the divisor: one limb more than the divisor always
+        // holds it. It's worked on in place, so nothing is allocated per bit.
+        var rem = new uint[divisor.Length + 1];
+
+        for (long i = BitLength(dividend) - 1; i >= 0; i--)
+        {
+            uint bit = (dividend[i >> 5] >> (int)(i & 31)) & 1;
+            ShiftLeftOneInPlace(rem, bit);
+            if (CompareZeroExtended(rem, divisor) >= 0)
+            {
+                SubtractInPlace(rem, divisor);
+                quotient[i >> 5] |= 1u << (int)(i & 31);
+            }
+        }
+
+        remainder = Trim(rem);
+        return Trim(quotient);
+    }
+
+    /// <summary>a = (a &lt;&lt; 1) | bit, in place; the bit shifted off the top is dropped.</summary>
+    private static void ShiftLeftOneInPlace(uint[] a, uint bit)
+    {
+        for (int i = 0; i < a.Length; i++)
+        {
+            uint x = a[i];
+            a[i] = (x << 1) | bit;
+            bit = x >> 31;
+        }
+    }
+
+    /// <summary>Compares a with b, where b may be shorter (and a may be untrimmed).</summary>
+    private static int CompareZeroExtended(uint[] a, uint[] b)
+    {
+        for (int i = a.Length - 1; i >= 0; i--)
+        {
+            uint bi = i < b.Length ? b[i] : 0;
+            if (a[i] != bi) return a[i] < bi ? -1 : 1;
+        }
+        return 0;
+    }
+
+    /// <summary>a -= b in place, for a &gt;= b: a + ~b + 1, the same trick as <see cref="Subtract"/>.</summary>
+    private static void SubtractInPlace(uint[] a, uint[] b)
+    {
+        uint carry = 1;
+        for (int i = 0; i < a.Length; i++)
+        {
+            uint bi = i < b.Length ? b[i] : 0;
+            a[i] = FullAdd(a[i], ~bi, ref carry);
+        }
+    }
+
+    /// <summary>
     /// Shifts by 0..31 bits into an array exactly one limb longer. Not trimmed:
     /// Multiply relies on every copy having the same length.
     /// </summary>
