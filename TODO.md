@@ -41,13 +41,27 @@ hex-float `ToString` (C's `%a`). Smoke check: 12/12 against known `%a` values, t
       vectors (1.0 = `3FFF 0000…`, π = `4000 921F B544 42D1 8469 898C C517 01B8`);
       binary256 1.0 = `3FFF F000…`; round trips at k = 160, 256, 512, 1024.
 
-### Session 3 — decimal text
-- [ ] `ToString` in decimal. Every binary float has a finite exact decimal
-      (m × 2^−e = m × 5^e / 10^e), so exact output is easy; the nicer default is the
-      **shortest** decimal that parses back to the same value at that precision (what
-      `double.ToString()` does). Plus fixed / scientific formats with N digits.
+### Session 3 — decimal text, built for eyeballing
+Matthew (2026-09-30): zeros aren't noise, they're alignment. Read a column of numbers
+like a bar graph, the way Chess Bruteforcer's `{n,10:N0}` columns work: the width of
+each number shows its size without doing any maths, and the patterns jump out.
+- [ ] **`IFormattable` / `ISpanFormattable`**, so `$"{x,12:F4}"` aligns like any .NET number.
+      - `F<n>`: fixed decimals with trailing zeros kept, so the points line up.
+      - `E<n>`: scientific with an exponent at least 3 digits wide (`3.3333E-001`),
+        so the exponent column reads as a log-scale bar.
+      - Custom `0` / `#` patterns (`00000.0000`) for zero-padding on both sides.
+      - `R`: shortest round-trip. `X` / `A`: hex float (what `ToString()` does today).
+- [ ] **Precision-width default (proposed)**: `ToString()` prints exactly the significant
+      digits the precision carries, zeros kept: ceil(1 + p·log10 2), so 17 for 53 bits and
+      62 for 200. Same precision, same width; more precision, visibly longer. It also
+      shows the truth (0.1 at 53 bits is `0.10000000000000001`). Waiting on Matthew:
+      this default, or shortest round-trip.
+- [ ] **Binary-point view** (`B<n>`?): significand bits lined up on the binary point, so
+      the leading 1's position (the power of two) is the bar.
+- [ ] Exact decimal is always finite (m × 2^−e = m × 5^e / 10^e), so every format can
+      round from the exact digits, correctly, in any mode.
 - [ ] `Parse`, correctly rounded: digits × 10^exp as an exact rational, then one
-      `DivRem` + sticky + `RoundExact` — every piece already exists. Hex floats too.
+      `DivRem` + sticky + `RoundExact`; every piece already exists. Hex floats too.
 
 ### Later
 - [ ] `FusedMultiplyAdd` (exact a×b + c, round once — nearly free here), `Sqrt`
@@ -59,7 +73,8 @@ hex-float `ToString` (C's `%a`). Smoke check: 12/12 against known `%a` values, t
 ### Open questions for Matthew
 - Default precision: 53 (same as `double`, easy to test), or bigger (113? 256?).
 - NaN payloads in `binary{k}`: one canonical quiet NaN (simple), or carry payload bits through?
-- Default `ToString` once decimal exists: shortest round-trip (recommended), or exact?
+- Default `ToString`: precision-width with zeros kept (proposed, fits Matthew's
+  bar-graph reading), or shortest round-trip? Aligned formats come either way.
 
 ## Done
 - [x] Division — `DivRem`, `/`, `%`, truncating like C# (2026-09-27). Repeated
