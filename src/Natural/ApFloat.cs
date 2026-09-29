@@ -32,8 +32,11 @@ public enum RoundingMode
 /// </summary>
 public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloat>, IComparable
 {
-    /// <summary>53 bits: the same as <see cref="double"/>.</summary>
-    public const int DefaultPrecision = 53;
+    /// <summary>
+    /// 256 bits, about 77 significant decimal digits. (Matthew's choice. For comparison,
+    /// <see cref="double"/> has 53 and IEEE binary256 has 237.)
+    /// </summary>
+    public const int DefaultPrecision = 256;
     public const int MaxPrecision = 1 << 30;
 
     private enum Kind : byte { Zero = 0, Finite, Infinity, NaN }   // Zero first, so default(ApFloat) is +0

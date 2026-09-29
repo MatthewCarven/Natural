@@ -94,3 +94,9 @@ of numbers like a bar graph (zeros kept, so widths and points line up, as in Che
 Bruteforcer's fixed-width output). Default `ToString()` will print the digits the
 precision carries, zeros kept (17 for 53 bits, 62 for 200); aligned `F`/`E`/custom-`0`
 formats and a binary-point view come too. All three are in TODO session 3.
+
+**Also decided**: default precision **256** bits (`ApFloat.DefaultPrecision`, about 77
+significant digits), changed in code, checked against Python for 1/3. And **canonical NaN**:
+the byte encoding writes a single quiet NaN pattern and reads any NaN as NaN (session 2).
+Values converted from `double`/`float`/`Half` keep 53/24/11 bits, so `double` still
+works as the test oracle. No open questions left in TODO.

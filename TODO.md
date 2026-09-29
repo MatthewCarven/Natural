@@ -4,7 +4,8 @@
 Arbitrary precision in the arithmetic, IEEE 754 in behaviour and in the byte format.
 
 **Built so far** (`src/Natural/ApFloat.cs`, smoke-tested only, no unit tests yet):
-±m × 2^e with m odd and a signed `long` exponent; precision per value (default 53);
+±m × 2^e with m odd and a signed `long` exponent; precision per value (default 256,
+Matthew's choice, 2026-09-30);
 ±0, ±∞, NaN; `RoundExact`, the single rounding point (4 IEEE modes, sticky bit,
 `minExp` floor ready for subnormals); correctly rounded `+ − × ÷` with IEEE special
 cases; the big-exponent-gap shortcut in `Add`; IEEE comparisons; integer conversions;
@@ -24,7 +25,10 @@ hex-float `ToString` (C's `%a`). Smoke check: 12/12 against known `%a` values, t
       exponent bits w and precision p — bias = `((1 << w) − 1) >> 1` (Matthew's
       max / 2), subnormals via `minExp`, overflow per mode (∞ or the largest finite).
       Implicit `Half`/`float`/`double` → `ApFloat` (exact), explicit back (rounded),
-      plus `ToDouble(mode)` etc.
+      plus `ToDouble(mode)` etc. A converted value keeps its source's precision
+      (11 / 24 / 53), not the 256 default. Mixed with a default-precision value, the
+      max rule takes it to 256 anyway, and two converted doubles still compute at 53,
+      which is what makes `double` usable as the oracle.
 - [ ] **Hardware as oracle**: at 53 bits, `+ − × ÷` bit-identical to `double`; at 24
       to `float`. Products that land subnormal or overflow, compared with the
       hardware's own result (it rounds once, straight to the subnormal). Round trips
@@ -37,6 +41,10 @@ hex-float `ToString` (C's `%a`). Smoke check: 12/12 against known `%a` values, t
       round() in integers: w + 13 = t where 2^(2t−1) ≤ k^8 < 2^(2t+1) — no floating
       log anywhere.
 - [ ] Byte order: little-endian by default (as `BitConverter` on x86), big-endian on request.
+- [ ] **NaN is canonical** (Matthew, 2026-09-30): encode always writes the one quiet NaN
+      (sign 0, exponent all ones, top fraction bit 1, the rest 0). Decode reads any NaN
+      (quiet or signalling, any payload) as plain NaN. Note .NET's `double.NaN` is
+      `0xFFF8…` (sign bit set), so the tests check `IsNaN`, not the bit pattern.
 - [ ] Tests: k = 16/32/64 bit-identical to `Half`/`float`/`double`; binary128 known
       vectors (1.0 = `3FFF 0000…`, π = `4000 921F B544 42D1 8469 898C C517 01B8`);
       binary256 1.0 = `3FFF F000…`; round trips at k = 160, 256, 512, 1024.
@@ -69,10 +77,6 @@ each number shows its size without doing any maths, and the patterns jump out.
 - [ ] Transcendentals (exp, log, sin, π) — need error bounds (Ziv's retry strategy)
       to stay correctly rounded. A project of its own.
 - [ ] Generic math (`INumber<ApFloat>`, `IFloatingPointIeee754<ApFloat>`).
-
-### Open questions for Matthew
-- Default precision: 53 (same as `double`, easy to test), or bigger (113? 256?).
-- NaN payloads in `binary{k}`: one canonical quiet NaN (simple), or carry payload bits through?
 
 ## Done
 - [x] Division — `DivRem`, `/`, `%`, truncating like C# (2026-09-27). Repeated
