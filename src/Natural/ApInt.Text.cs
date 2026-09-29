@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Adpdt;
+namespace Natural;
 
 public readonly partial struct ApInt
 {

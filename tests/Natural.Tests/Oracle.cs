@@ -1,6 +1,6 @@
 using System.Numerics;
 
-namespace Adpdt.Tests;
+namespace Natural.Tests;
 
 /// <summary>
 /// Test helpers. System.Numerics.BigInteger is the reference answer here; the

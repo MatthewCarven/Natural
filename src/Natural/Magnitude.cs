@@ -1,4 +1,4 @@
-namespace Adpdt;
+namespace Natural;
 
 /// <summary>
 /// Arithmetic on raw magnitudes: arrays of 32-bit limbs, least significant limb

@@ -1,7 +1,7 @@
 using System.Numerics;
-using static Adpdt.Tests.Oracle;
+using static Natural.Tests.Oracle;
 
-namespace Adpdt.Tests;
+namespace Natural.Tests;
 
 public class ArithmeticTests
 {

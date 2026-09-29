@@ -1,4 +1,4 @@
-namespace Adpdt.Tests;
+namespace Natural.Tests;
 
 /// <summary>The one-word adder everything else is built on.</summary>
 public class FullAddTests

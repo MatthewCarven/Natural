@@ -1,4 +1,4 @@
-namespace Adpdt;
+namespace Natural;
 
 /// <summary>
 /// An arbitrary-precision signed integer. Immutable; <c>default(ApInt)</c> is zero.

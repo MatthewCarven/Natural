@@ -56,3 +56,16 @@ which is exactly IEEE 754's bias (`max >> 1` = `0111…1`: 127, 1023, 16383). Pl
 MPFR-style `ApFloat` in memory (signed `long` exponent, no bias needed), correctly
 rounded like IEEE, and IEEE `binary{k}` as the byte format, where the bias lives;
 k any multiple of 32 from 128 via the IEEE 754-2008 width formula. Details in TODO.
+
+## 2026-09-30 — Project renamed Adpdt → Natural
+
+Matthew named the GitHub repo `MatthewCarven/Natural`, so the code follows:
+namespace `Natural`, `Natural.slnx`, `src/Natural/Natural.csproj`,
+`tests/Natural.Tests/`. All moves via `git mv`. The internal limb-arithmetic class
+stays `Magnitude` — the rename to `Natural` considered on 2026-09-28 was only to
+dodge a `Magnitude` namespace, which didn't happen. The folder on disk is still
+`ADPDT` (Matthew's call). `origin` moved from `Magnitude.git` to `Natural.git`;
+the old `Magnitude` repo is Matthew's to delete or archive.
+
+Done two days late: on 2026-09-28 a server-side permission-check outage blocked
+every shell command for the rest of the session.

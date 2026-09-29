@@ -1,6 +1,8 @@
-# ADPDT — Arbitrary Data Precision Data Type
+# Natural — arbitrary-precision numbers, built from bits
 
-A hand-built arbitrary-precision integer for C# (`Adpdt.ApInt`), where the
+(Started as ADPDT, "Arbitrary Data Precision Data Type" — still the folder name.)
+
+A hand-built arbitrary-precision integer for C# (`Natural.ApInt`), where the
 arithmetic is done with **bitwise operations**, not by leaning on the CPU's add
 and multiply or on `System.Numerics.BigInteger`. That's the point of the project,
 so keep it that way: new arithmetic is built on `Magnitude.FullAdd` (or on other
@@ -8,22 +10,22 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
 
 ## Layout
 
-- `src/Adpdt/Magnitude.cs` — magnitude arithmetic on little-endian `uint[]` limbs
+- `src/Natural/Magnitude.cs` — magnitude arithmetic on little-endian `uint[]` limbs
   (trimmed; zero is the empty array). `FullAdd` is the one-word ripple adder
   (XOR = sum without carries, AND = carries generated, shift and repeat);
   subtract is `a + ~b + 1`; multiply is shift-and-add; divide is restoring
   binary long division (shift in a bit, subtract if it fits), in place.
-- `src/Adpdt/ApInt.cs` — the public struct: sign + magnitude, operators,
+- `src/Natural/ApInt.cs` — the public struct: sign + magnitude, operators,
   conversions, comparison. `default(ApInt)` is zero; there is no negative zero.
-- `src/Adpdt/ApInt.Text.cs` — parse (decimal via `x*10 = (x<<3)+(x<<1)`, hex,
+- `src/Natural/ApInt.Text.cs` — parse (decimal via `x*10 = (x<<3)+(x<<1)`, hex,
   binary) and format (decimal via double dabble, eight BCD digits per `uint`).
-- `tests/Adpdt.Tests` — xUnit. `Oracle.cs` converts to/from `BigInteger` through
+- `tests/Natural.Tests` — xUnit. `Oracle.cs` converts to/from `BigInteger` through
   raw magnitude bytes, so arithmetic tests don't depend on the text code.
 
 ## Commands
 
 ```
-dotnet test Adpdt.slnx
+dotnet test Natural.slnx
 ```
 
 ## Conventions

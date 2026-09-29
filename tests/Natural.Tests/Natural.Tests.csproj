@@ -19,7 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Adpdt\Adpdt.csproj" />
+    <ProjectReference Include="..\..\src\Natural\Natural.csproj" />
   </ItemGroup>
 
 </Project>
