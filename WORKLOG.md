@@ -69,3 +69,22 @@ the old `Magnitude` repo is Matthew's to delete or archive.
 
 Done two days late: on 2026-09-28 a server-side permission-check outage blocked
 every shell command for the rest of the session.
+
+## 2026-09-30 — ApFloat core (smoke-tested), and the plan for the rest
+
+`src/Natural/ApFloat.cs`: ±m × 2^e (m odd, `long` exponent, no bias in memory),
+precision per value, ±0 / ±∞ / NaN. Every operation computes the exact result with
+the integer code and rounds once in `RoundExact` (four IEEE modes; a sticky bit for
+division's remainder; a `minExp` floor for the subnormals to come). `+ − × ÷` with
+IEEE's special cases; `Add` swaps an operand far below the rounding point for a
+single sticky bit, so 1 + 2^-1000000 costs nothing. Hex-float `ToString`. Small
+additions: `Magnitude.TestBit` / `AnyBitsBelow` / `TrailingZeroCount`, and
+`ApInt.Limbs` / `FromLimbs` (internal).
+
+Smoke check, not tests: 12/12 against known `%a` strings (1/3, 1/10, 0.1 + 0.2 =
+0x1.3333333333334p-2, signed zeros, 1/0, 0/0, the gap shortcut both ways). The one
+"failure" was my expected value: 1/3 at 200 bits ends ...56p-2, not ...58p-2, as
+Python's `fractions` confirmed independently.
+
+Matthew asked to stop at a plan this session; the rest is in TODO as three sessions
+(prove the core + Half/float/double; `binary{k}`; decimal text) and three open questions.

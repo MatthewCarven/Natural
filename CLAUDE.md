@@ -19,6 +19,9 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   conversions, comparison. `default(ApInt)` is zero; there is no negative zero.
 - `src/Natural/ApInt.Text.cs` — parse (decimal via `x*10 = (x<<3)+(x<<1)`, hex,
   binary) and format (decimal via double dabble, eight BCD digits per `uint`).
+- `src/Natural/ApFloat.cs` — IEEE-style arbitrary-precision float: ±m × 2^e, m odd,
+  `long` exponent, precision per value. All rounding goes through `RoundExact`
+  (compute exact, round once). In progress — see TODO for the plan.
 - `tests/Natural.Tests` — xUnit. `Oracle.cs` converts to/from `BigInteger` through
   raw magnitude bytes, so arithmetic tests don't depend on the text code.
 

@@ -1,21 +1,65 @@
 # TODO
 
-## Next — `ApFloat` (design agreed 2026-09-27)
+## ApFloat — the plan (agreed 2026-09-27; core written 2026-09-30)
 Arbitrary precision in the arithmetic, IEEE 754 in behaviour and in the byte format.
-- [ ] **Representation** (MPFR-style): sign, `ApInt` significand, `long` exponent,
-      precision in bits per value; flags for ±0, ±∞, NaN. No bias in memory — the
-      exponent is signed.
-- [ ] **+, −, ×, correctly rounded**: compute exact with `ApInt`, round once.
-      Round-half-to-even by default, plus toward zero / +∞ / −∞. Result precision =
-      max of the operands' (overloads to choose it).
-- [ ] **÷**: significand `DivRem` for the quotient bits, the remainder as the sticky
-      bit for rounding.
-- [ ] **IEEE `binary{k}` encode/decode** — Matthew's "max / 2" bias lives here.
-      k = 16, 32, 64, then any multiple of 32 from 128 (IEEE 754-2008 §3.6):
-      w = round(4·log2 k) − 13 exponent bits, bias 2^(w−1) − 1, p = k − w with the
-      hidden bit. Subnormals, ±0, ±∞, NaN. Bit-exact round trips with
-      `Half` / `float` / `double` as the test oracle; binary128 matches GCC's `__float128`.
-- [ ] Decimal parse / format for `ApFloat`.
+
+**Built so far** (`src/Natural/ApFloat.cs`, smoke-tested only, no unit tests yet):
+±m × 2^e with m odd and a signed `long` exponent; precision per value (default 53);
+±0, ±∞, NaN; `RoundExact`, the single rounding point (4 IEEE modes, sticky bit,
+`minExp` floor ready for subnormals); correctly rounded `+ − × ÷` with IEEE special
+cases; the big-exponent-gap shortcut in `Add`; IEEE comparisons; integer conversions;
+hex-float `ToString` (C's `%a`). Smoke check: 12/12 against known `%a` values, the
+200-bit one confirmed with Python `fractions`.
+
+### Session 1 — prove the core, then Half / float / double
+- [ ] **Reference oracle in the tests**: an independent rounding of an exact rational
+      (`BigInteger` num/den → p bits, any mode), sharing no code with `RoundExact`.
+      Random operands (limb-biased as usual), random precision 1..200, all four modes,
+      all four ops, plus the constructor and `WithPrecision`.
+- [ ] **Special-case table**: IEEE 754 §6–7 (0×∞, ∞−∞, 0/0 → NaN; x/0 → ±∞; signed
+      zeros: −0 + −0, x − x, rounding down gives −0; NaN compares false).
+- [ ] **Gap shortcut**: same results as brute-force exact addition for gaps just
+      above and below the threshold (small enough that brute force is cheap).
+- [ ] **IEEE conversions for widths ≤ 64**: one encoder/decoder parameterised by
+      exponent bits w and precision p — bias = `((1 << w) − 1) >> 1` (Matthew's
+      max / 2), subnormals via `minExp`, overflow per mode (∞ or the largest finite).
+      Implicit `Half`/`float`/`double` → `ApFloat` (exact), explicit back (rounded),
+      plus `ToDouble(mode)` etc.
+- [ ] **Hardware as oracle**: at 53 bits, `+ − × ÷` bit-identical to `double`; at 24
+      to `float`. Products that land subnormal or overflow, compared with the
+      hardware's own result (it rounds once, straight to the subnormal). Round trips
+      of every bit-pattern class, all three types.
+- [ ] Mutation check (e.g. drop `|| rest` from ties-to-even), then commit.
+
+### Session 2 — IEEE `binary{k}`, any width
+- [ ] Generalise the encoder to bytes: k = 16, 32, 64, 128, then any multiple of 32
+      from 128 (IEEE 754-2008 §3.6): w = round(4·log2 k) − 13, p = k − w. Do the
+      round() in integers: w + 13 = t where 2^(2t−1) ≤ k^8 < 2^(2t+1) — no floating
+      log anywhere.
+- [ ] Byte order: little-endian by default (as `BitConverter` on x86), big-endian on request.
+- [ ] Tests: k = 16/32/64 bit-identical to `Half`/`float`/`double`; binary128 known
+      vectors (1.0 = `3FFF 0000…`, π = `4000 921F B544 42D1 8469 898C C517 01B8`);
+      binary256 1.0 = `3FFF F000…`; round trips at k = 160, 256, 512, 1024.
+
+### Session 3 — decimal text
+- [ ] `ToString` in decimal. Every binary float has a finite exact decimal
+      (m × 2^−e = m × 5^e / 10^e), so exact output is easy; the nicer default is the
+      **shortest** decimal that parses back to the same value at that precision (what
+      `double.ToString()` does). Plus fixed / scientific formats with N digits.
+- [ ] `Parse`, correctly rounded: digits × 10^exp as an exact rational, then one
+      `DivRem` + sticky + `RoundExact` — every piece already exists. Hex floats too.
+
+### Later
+- [ ] `FusedMultiplyAdd` (exact a×b + c, round once — nearly free here), `Sqrt`
+      (needs `ApInt` integer square root), `Floor`/`Ceiling`/`Truncate`/`Round`.
+- [ ] Transcendentals (exp, log, sin, π) — need error bounds (Ziv's retry strategy)
+      to stay correctly rounded. A project of its own.
+- [ ] Generic math (`INumber<ApFloat>`, `IFloatingPointIeee754<ApFloat>`).
+
+### Open questions for Matthew
+- Default precision: 53 (same as `double`, easy to test), or bigger (113? 256?).
+- NaN payloads in `binary{k}`: one canonical quiet NaN (simple), or carry payload bits through?
+- Default `ToString` once decimal exists: shortest round-trip (recommended), or exact?
 
 ## Done
 - [x] Division — `DivRem`, `/`, `%`, truncating like C# (2026-09-27). Repeated

@@ -273,6 +273,32 @@ internal static class Magnitude
         return 32L * (a.Length - 1) + (32 - System.Numerics.BitOperations.LeadingZeroCount(a[^1]));
     }
 
+    /// <summary>Bit <paramref name="index"/> (0 = least significant); bits past the end are 0.</summary>
+    internal static bool TestBit(uint[] a, long index)
+    {
+        if (index < 0 || (index >> 5) >= a.Length) return false;
+        return ((a[index >> 5] >> (int)(index & 31)) & 1) != 0;
+    }
+
+    /// <summary>Whether any of bits 0 .. count-1 are set -- the "sticky" question rounding asks.</summary>
+    internal static bool AnyBitsBelow(uint[] a, long count)
+    {
+        if (count <= 0) return false;
+        long whole = count >> 5;
+        for (long i = 0; i < whole && i < a.Length; i++)
+            if (a[i] != 0) return true;
+        int partial = (int)(count & 31);
+        return partial != 0 && whole < a.Length && (a[whole] & ((1u << partial) - 1)) != 0;
+    }
+
+    /// <summary>Number of zero bits below the lowest set bit. <paramref name="a"/> must be non-zero.</summary>
+    internal static long TrailingZeroCount(uint[] a)
+    {
+        int i = 0;
+        while (a[i] == 0) i++;
+        return 32L * i + System.Numerics.BitOperations.TrailingZeroCount(a[i]);
+    }
+
     internal static uint[] Trim(uint[] a)
     {
         int n = a.Length;

@@ -20,6 +20,10 @@ public readonly partial struct ApInt : IEquatable<ApInt>, IComparable<ApInt>, IC
 
     private uint[] Mag => _mag ?? Magnitude.Empty;
 
+    // For ApFloat, which keeps its significand as a raw magnitude.
+    internal uint[] Limbs => Mag;
+    internal static ApInt FromLimbs(uint[] trimmedMagnitude, bool negative) => new(trimmedMagnitude, negative);
+
     public static ApInt Zero => default;
     public static ApInt One => new([1], false);
     public static ApInt MinusOne => new([1], true);
