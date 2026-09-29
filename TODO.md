@@ -3,37 +3,51 @@
 ## ApFloat — the plan (agreed 2026-09-27; core written 2026-09-30)
 Arbitrary precision in the arithmetic, IEEE 754 in behaviour and in the byte format.
 
-**Built so far** (`src/Natural/ApFloat.cs`, smoke-tested only, no unit tests yet):
+**Built so far** (`src/Natural/ApFloat.cs`, `ApFloat.Ieee.cs`; 36 tests):
 ±m × 2^e with m odd and a signed `long` exponent; precision per value (default 256,
 Matthew's choice, 2026-09-30);
 ±0, ±∞, NaN; `RoundExact`, the single rounding point (4 IEEE modes, sticky bit,
-`minExp` floor ready for subnormals); correctly rounded `+ − × ÷` with IEEE special
+`minExp` floor for subnormals); correctly rounded `+ − × ÷` with IEEE special
 cases; the big-exponent-gap shortcut in `Add`; IEEE comparisons; integer conversions;
-hex-float `ToString` (C's `%a`). Smoke check: 12/12 against known `%a` values, the
-200-bit one confirmed with Python `fractions`.
+hex-float `ToString` (C's `%a`); IEEE encode/decode for any format ≤ 64 bits, and
+`Half`/`float`/`double` both ways.
 
-### Session 1 — prove the core, then Half / float / double
-- [ ] **Reference oracle in the tests**: an independent rounding of an exact rational
-      (`BigInteger` num/den → p bits, any mode), sharing no code with `RoundExact`.
-      Random operands (limb-biased as usual), random precision 1..200, all four modes,
-      all four ops, plus the constructor and `WithPrecision`.
-- [ ] **Special-case table**: IEEE 754 §6–7 (0×∞, ∞−∞, 0/0 → NaN; x/0 → ±∞; signed
-      zeros: −0 + −0, x − x, rounding down gives −0; NaN compares false).
-- [ ] **Gap shortcut**: same results as brute-force exact addition for gaps just
-      above and below the threshold (small enough that brute force is cheap).
-- [ ] **IEEE conversions for widths ≤ 64**: one encoder/decoder parameterised by
-      exponent bits w and precision p — bias = `((1 << w) − 1) >> 1` (Matthew's
-      max / 2), subnormals via `minExp`, overflow per mode (∞ or the largest finite).
-      Implicit `Half`/`float`/`double` → `ApFloat` (exact), explicit back (rounded),
-      plus `ToDouble(mode)` etc. A converted value keeps its source's precision
-      (11 / 24 / 53), not the 256 default. Mixed with a default-precision value, the
-      max rule takes it to 256 anyway, and two converted doubles still compute at 53,
-      which is what makes `double` usable as the oracle.
-- [ ] **Hardware as oracle**: at 53 bits, `+ − × ÷` bit-identical to `double`; at 24
-      to `float`. Products that land subnormal or overflow, compared with the
-      hardware's own result (it rounds once, straight to the subnormal). Round trips
-      of every bit-pattern class, all three types.
-- [ ] Mutation check (e.g. drop `|| rest` from ties-to-even), then commit.
+### Open question for Matthew (from session 1)
+- [ ] **Double rounding at 53 bits in the subnormal range.** ApFloat's exponent is
+      unbounded, so `(double)(x * y)` for two converted doubles rounds twice when the
+      product lands where double would go subnormal: once to 53 bits, then again to the
+      subnormal grid. The hardware rounds once. Measured: about 1% of such products and
+      quotients differ in the last place (10,454 of 987,109 products). Rounding the exact
+      result once is always right (`Multiply(x, y, 106).ToDouble()`), and the tests do
+      that. Options: leave it, since it's documented on the type and inherent to an
+      unbounded exponent; or add arithmetic *in a format*, e.g. `Multiply(x, y, Binary64)`,
+      passing the format's `minExp` down to `RoundExact`. That is a small change, since
+      the floor already exists.
+
+### Session 1 — prove the core, then Half / float / double (done 2026-09-30)
+- [x] **Reference oracle in the tests** (`FloatOracle.cs`): exact rationals rounded by
+      `BigInteger` long division, remainder against half the divisor; no code shared
+      with `RoundExact`. Constructor, `WithPrecision`, `+ − × ÷`: random limb-biased
+      operands, precision 1..200, all four modes, 3,000 rounds each.
+- [x] **Special-case table**: 17 specials (NaN, ±∞, ±0, subnormals, ±max, ordinary
+      values), every pair, all four ops and all comparisons against `double` bit for
+      bit. Signed-zero rules in every mode. NaN/∞ rules.
+- [x] **Gap shortcut**: b's leading bit within ±4 places of the threshold, either
+      sign, against exact addition. (The threshold has one place of slack: the exact
+      condition is `topB < min(a._exp, topA − p − 1)`, so mutations that only eat the
+      slack stay green, correctly.)
+- [x] **IEEE conversions for widths ≤ 64** (`ApFloat.Ieee.cs`): `FromIeeeBits` /
+      `ToIeeeBits` (internal until session 2 designs the public byte API). Implicit
+      `Half`/`float`/`double` in (exact, keeping 11/24/53 bits); explicit out, plus
+      `ToDouble(mode)`, `ToSingle(mode)`, `ToHalf(mode)`. Canonical NaN on encode.
+      Also added exact `uint`/`ulong` in and `long`/`ulong` out: without them C# would
+      silently route a `ulong` through the new `float` conversion.
+- [x] **Hardware as oracle**: `+ − × ÷` bit-identical to `double` and `float` (20,000
+      pairs each, crowded round subnormal/overflow results), both rounded once from
+      exact and through the 53/24-bit operators. Every `Half` pattern round-trips; tiny
+      formats (w 2–5, p 2–6) exhaustively in every mode; encoder against the oracle
+      for 8 formats × 4 modes; narrowing matches the hardware's `(float)`/`(Half)`.
+- [x] Mutation check: 12 real mutations, all red. Details in WORKLOG.
 
 ### Session 2 — IEEE `binary{k}`, any width
 - [ ] Generalise the encoder to bytes: k = 16, 32, 64, 128, then any multiple of 32

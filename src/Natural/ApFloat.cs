@@ -19,7 +19,11 @@ public enum RoundingMode
 /// An arbitrary-precision binary floating-point number that behaves like IEEE 754:
 /// every operation is correctly rounded (the exact result, rounded once), with signed
 /// zeros, infinities and NaN, and the same results as <see cref="double"/> when the
-/// precision is 53 bits.
+/// precision is 53 bits, throughout double's normal range. (The exponent here is
+/// unbounded, so a 53-bit result that double would hold as a subnormal rounds a second
+/// time on conversion. Around 1 in 100 such products and quotients then differ in the
+/// last place. For the hardware's answer there, round the exact result once:
+/// <c>ApFloat.Multiply(x, y, 106).ToDouble()</c>.)
 ///
 /// A finite value is <c>±significand × 2^exponent</c>. The significand is an odd
 /// magnitude of at most <see cref="Precision"/> bits (odd, so every value has exactly
@@ -301,7 +305,14 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
     public static implicit operator ApFloat(ApInt value) =>
         new(value, 0, (int)Math.Max(DefaultPrecision, Math.Min(value.BitLength, MaxPrecision)));
 
+    // uint and ulong are here for safety, not convenience. With the implicit conversions
+    // from float and double, C# picks the most specific source type it can reach: without
+    // an exact ulong conversion, a ulong would silently go through float and lose bits
+    // (and without uint, a uint or a byte would be ambiguous). Likewise the explicit long
+    // and ulong below keep (long)x from going through float.
     public static implicit operator ApFloat(long value) => (ApInt)value;
+    public static implicit operator ApFloat(uint value) => (ApInt)value;
+    public static implicit operator ApFloat(ulong value) => (ApInt)value;
 
     /// <summary>Truncates toward zero, like (long)double. Infinity and NaN throw.</summary>
     public static explicit operator ApInt(ApFloat value)
@@ -313,6 +324,12 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
             : Magnitude.ShiftRight(value.Mant, -value._exp);
         return ApInt.FromLimbs(mag, value._negative);
     }
+
+    /// <summary>Truncates toward zero; throws if the result doesn't fit.</summary>
+    public static explicit operator long(ApFloat value) => (long)(ApInt)value;
+
+    /// <summary>Truncates toward zero; throws if the result doesn't fit.</summary>
+    public static explicit operator ulong(ApFloat value) => (ulong)(ApInt)value;
 
     // ------------------------------------------------------------------
     // Comparison and equality (IEEE: NaN is unordered, +0 == -0)

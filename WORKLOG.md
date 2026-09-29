@@ -100,3 +100,57 @@ significant digits), changed in code, checked against Python for 1/3. And **cano
 the byte encoding writes a single quiet NaN pattern and reads any NaN as NaN (session 2).
 Values converted from `double`/`float`/`Half` keep 53/24/11 bits, so `double` still
 works as the test oracle. No open questions left in TODO.
+
+## 2026-09-30 — ApFloat session 1: the core proved, and Half / float / double
+
+**Tests 59 → 95**, all green in ~2 s. Everything the TODO's session 1 asked for:
+
+- `FloatOracle.cs`, the reference: exact rationals (`BigInteger` over `BigInteger`),
+  rounded by long division with the remainder compared against half the divisor. It
+  shares no code with `RoundExact`, which tests bits. It has a `minExp` floor and an
+  IEEE encoder of its own, so it can check subnormals and overflow in every mode,
+  where the hardware only knows round-to-nearest.
+- Constructor, `WithPrecision` and `+ − × ÷` against it: random limb-biased operands,
+  precision 1..200, all four modes, plus near-cancelling pairs.
+- The special-case table checked against `double` itself: 17 specials, every pair,
+  every op and comparison, bit for bit. Also signed zeros in all four modes.
+- The gap shortcut against exact addition, with b's leading bit within ±4 places of
+  the threshold.
+- `ApFloat.Ieee.cs`: one encoder/decoder over (exponent bits w, precision p), with the
+  bias as Matthew's max / 2 (`maxField >> 1`). The largest finite value is
+  `maxField ^ 1` in the exponent field with the fraction all ones. It rounds once,
+  straight to the format, via `RoundExact`'s `minExp` floor. Past the top, or under
+  half the smallest subnormal, it exits early, so `2^(2^60)` converts at once. Implicit
+  `Half`/`float`/`double` in (exact, keeping 11/24/53 bits), explicit out, and
+  `ToDouble/ToSingle/ToHalf(mode)`.
+- Hardware as oracle: every `Half` pattern round-trips; tiny formats (w 2–5, p 2–6)
+  do so exhaustively, in every mode; 100k `float` and 100k `double`; narrowing matches
+  the hardware's `(float)` and `(Half)` casts. `+ − × ÷` are bit-identical to `double`
+  and `float` over 20,000 pairs each, crowded round the subnormal and overflow edges.
+
+**A trap the new conversions opened, closed.** With implicit `float` and `double`
+conversions, C# resolves `ApFloat x = someUlong` to the *most specific* source type it
+can reach. That was `float`, silently, losing bits. `(long)x` likewise went through
+`float`. Added exact `uint`/`ulong` in and `long`/`ulong` out (truncating, throwing on
+overflow), with tests. `uint` is there because without it a `uint` or `byte` is
+ambiguous between `long` and `ulong`.
+
+**Found: double rounding at 53 bits among the subnormals.** ApFloat's exponent is
+unbounded, so a 53-bit product that double would hold as a subnormal rounds a second
+time on conversion. A probe of a million random products landing there: 10,454 of
+987,109 differ from the hardware in the last place (about 1%); quotients 2,165 of 201,587.
+Rounding the exact result once is always right, and the hardware tests do that: sums
+at 2,200 bits (exact), products at 106 (exact), quotients at 256. A quotient that isn't
+a midpoint stays at least 2^-106 of its size away from every midpoint, so 256 bits
+can't make or cross one. The class doc used to say "the same results as double at 53
+bits" without that caveat; it has it now. Open question in TODO: whether to add
+arithmetic *in a format*, which would pass the format's `minExp` to `RoundExact`.
+
+**Mutation check**: 12 real mutations, all red. They were ties-to-even without `|| rest`;
+toward-+∞ ignoring sticky; `x − x` always +0; divide ignoring its remainder; divide
+without guard bits; three gap-threshold/stand-in breaks; the subnormal floor one place
+high; the underflow stand-in too eager; toward-zero overflow going to ∞; NaN encoded
+signalling. Two mutations I tried first stayed green and are **equivalent**: `Add`'s
+threshold is `min(a._exp, topA − p − 1) − 1` where `min(...)` alone would do, so
+mutations that only use up that one place of slack are still correct. The ones past
+the true boundary all go red.
