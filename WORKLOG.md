@@ -88,3 +88,9 @@ Python's `fractions` confirmed independently.
 
 Matthew asked to stop at a plan this session; the rest is in TODO as three sessions
 (prove the core + Half/float/double; `binary{k}`; decimal text) and three open questions.
+
+**Decided, same day**: decimal text is designed for eyeballing. Matthew reads a column
+of numbers like a bar graph (zeros kept, so widths and points line up, as in Chess
+Bruteforcer's fixed-width output). Default `ToString()` will print the digits the
+precision carries, zeros kept (17 for 53 bits, 62 for 200); aligned `F`/`E`/custom-`0`
+formats and a binary-point view come too. All three are in TODO session 3.
