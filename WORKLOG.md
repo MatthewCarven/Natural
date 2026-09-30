@@ -154,3 +154,48 @@ signalling. Two mutations I tried first stayed green and are **equivalent**: `Ad
 threshold is `min(a._exp, topA − p − 1) − 1` where `min(...)` alone would do, so
 mutations that only use up that one place of slack are still correct. The ones past
 the true boundary all go red.
+
+## 2026-09-30 — ApFloat session 2: IEEE binary{k} as bytes, any width
+
+**Tests 95 → 155**, all green in ~2 s.
+
+- `IeeeFormat` (`src/Natural/IeeeFormat.cs`): (exponent bits, precision), with bias,
+  emax and emin. `IeeeFormat.Binary(k)` covers binary16/32/64 and every multiple of 32
+  from 128. The width rule w = round(4·log2 k) − 13 is done in integers:
+  2^(2t−1) ≤ k^8 < 2^(2t+1), so t is half of k^8's bit length, with k^8 an `ApInt`. It
+  can't tie, because k^8 would have to be an odd power of two. The widest format whose
+  exponent fits a `long` is binary480768 (w = 62). The test checks the formula against
+  `Math.Log2` for all 15,000 widths. Custom formats work too: bfloat16 is (8, 8).
+- `ApFloat.ToIeeeBytes(format, mode, bigEndian)` / `FromIeeeBytes(bytes, format,
+  bigEndian)`, little-endian by default. The encoder and decoder now work on the bit
+  pattern as little-endian words of any length. Bit fields are written with bitwise
+  loops (`PutBits`, `GetBits`), and the significand is ORed in so it can't clobber a
+  sign sharing its word. `Half`/`float`/`double` and the internal `ulong` entry points
+  now run on the same core, so session 1's 95 tests kept checking it through the rewrite.
+- NaN is canonical, as agreed: it always encodes as the one quiet NaN, and any NaN decodes as NaN.
+
+The oracle went wide with it: patterns are `BigInteger`s. Its encoder rounds the
+significand alone, with the subnormal floor moved by the exponent, because rounding
+commutes with scaling by 2^e. binary1024's range reaches 2^67,108,864, which the old
+rational route would have had to build as a number.
+
+Reference values: π to 400 bits by Machin's formula in Python integers, matching the
+published hex expansion. binary128 π came out as `4000921FB54442D18469898CC51701B8`,
+the TODO's vector. binary256 π and 1/3 come from a separate Python encoder (Fractions
+only), so the two implementations agree on vectors neither was written against.
+The binary128 table is 1, −2, π, 1/3, max, min normal, min subnormal, −0, ±∞ and NaN;
+binary256 has the same.
+
+A cross-check I liked: bfloat16 has float's exponent, so a float rounded toward zero
+into bfloat16 must be exactly the float's top two bytes. It is, for 20,000 floats.
+
+**Mutation check**: 13 of 13 red. The mutations were: the width formula rounding up;
+emin off by one; big-endian ignored on read and on write; the fraction keeping the
+exponent's bits; `PutBits` never clearing; the largest finite value losing its partial
+word or getting the wrong exponent field; the quiet-NaN bit at the bottom; the
+significand overwriting the sign; the subnormal floor one place high; toward-zero
+overflow going to ∞; the sign read one bit low.
+
+The session 1 question (double rounding among the subnormals at 53 bits, and whether to
+add arithmetic *in a format*) is still open. `IeeeFormat` now exists, so that option
+would be `ApFloat.Multiply(x, y, IeeeFormat.Binary64)`.

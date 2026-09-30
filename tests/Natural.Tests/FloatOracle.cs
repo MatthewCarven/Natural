@@ -67,54 +67,74 @@ internal static class FloatOracle
     // IEEE formats: w exponent bits, precision p, w + p bits in all
     // ------------------------------------------------------------------
 
-    public static ulong CanonicalNaN(int w, int p) => (((1UL << w) - 1) << (p - 1)) | (1UL << (p - 2));
+    // Patterns are BigIntegers, so the same code serves binary16 and binary1024.
+
+    public static BigInteger CanonicalNaN(int w, int p) =>
+        (((BigInteger.One << w) - 1) << (p - 1)) | (BigInteger.One << (p - 2));
 
     /// <summary>The bit pattern for x in the format, rounded once from the exact value.</summary>
-    public static ulong Encode(ApFloat x, int w, int p, RoundingMode mode)
+    public static BigInteger Encode(ApFloat x, int w, int p, RoundingMode mode)
     {
         int f = p - 1;
-        ulong maxField = (1UL << w) - 1;
-        ulong sign = x.IsNegative ? 1UL << (w + f) : 0;
+        BigInteger maxField = (BigInteger.One << w) - 1;
+        BigInteger sign = x.IsNegative ? BigInteger.One << (w + f) : BigInteger.Zero;
         if (x.IsNaN) return CanonicalNaN(w, p);
         if (x.IsInfinity) return sign | (maxField << f);
         if (x.IsZero) return sign;
 
-        long bias = (long)(maxField / 2), emin = 1 - bias, emax = bias;
-        var (num, den) = ToRational(x);
-        Rounded r = Round(num, den, p, mode, emin - f);
-        if (r.N.IsZero) return sign;
+        long bias = (1L << (w - 1)) - 1, emin = 1 - bias, emax = bias;
 
-        long top = (long)r.N.GetBitLength() - 1 + r.E;
+        // Rounding commutes with scaling by 2^e, so round the significand alone, with the
+        // subnormal floor moved to match. The numbers stay small however big the exponent
+        // (binary1024's range reaches 2^67108864).
+        BigInteger m = Oracle.ToBig(x.Significand);
+        long e = x.Exponent;
+        Rounded r = Round(x.IsNegative ? -m : m, BigInteger.One, p, mode, emin - f - e);
+        if (r.N.IsZero) return sign;
+        long exponent = r.E + e;
+
+        long top = (long)r.N.GetBitLength() - 1 + exponent;
         if (top > emax)
         {
             bool infinite = mode == RoundingMode.ToNearestEven
                 || (mode == RoundingMode.TowardPositive && !x.IsNegative)
                 || (mode == RoundingMode.TowardNegative && x.IsNegative);
-            return infinite ? sign | (maxField << f) : sign | ((maxField - 1) << f) | ((1UL << f) - 1);
+            return infinite ? sign | (maxField << f) : sign | ((maxField - 1) << f) | ((BigInteger.One << f) - 1);
         }
-        if (top < emin) return sign | (ulong)r.N;          // subnormal: r.E is emin - f already
+        if (top < emin) return sign | r.N;          // subnormal: the exponent is emin - f already
 
-        // Normal: N × 2^E as a p-bit integer times 2^(top - f); the field stores it minus 2^f.
-        long shift = r.E - (top - f);
-        BigInteger m = shift >= 0 ? r.N << (int)shift : r.N >> (int)-shift;
-        return sign | ((ulong)(top + bias) << f) | ((ulong)m - (1UL << f));
+        // Normal: N × 2^exponent as a p-bit integer times 2^(top - f); the field stores it minus 2^f.
+        long shift = exponent - (top - f);
+        BigInteger significand = shift >= 0 ? r.N << (int)shift : r.N >> (int)-shift;
+        return sign | ((BigInteger)(top + bias) << f) | (significand - (BigInteger.One << f));
     }
 
     /// <summary>What a bit pattern means, in <see cref="Describe(ApFloat)"/>'s notation.</summary>
-    public static string Decode(ulong bits, int w, int p)
+    public static string Decode(BigInteger bits, int w, int p)
     {
         int f = p - 1;
-        ulong maxField = (1UL << w) - 1;
-        long bias = (long)(maxField / 2);
-        bool negative = ((bits >> (w + f)) & 1) == 1;
-        ulong field = (bits >> f) & maxField;
-        ulong fraction = bits & ((1UL << f) - 1);
-        if (field == maxField) return fraction != 0 ? "NaN" : negative ? "-inf" : "+inf";
+        long maxField = (1L << w) - 1;
+        long bias = maxField / 2;
+        bool negative = !((bits >> (w + f)) & 1).IsZero;
+        long field = (long)((bits >> f) & maxField);
+        BigInteger fraction = bits & ((BigInteger.One << f) - 1);
+        if (field == maxField) return !fraction.IsZero ? "NaN" : negative ? "-inf" : "+inf";
         // A subnormal is 0.fraction at the smallest normal exponent: the same place values as field 1.
         BigInteger n = field == 0 ? fraction : fraction + (BigInteger.One << f);
-        long e = Math.Max((long)field, 1) - bias - f;
+        long e = Math.Max(field, 1) - bias - f;
         return Describe(new Rounded(negative, n, e));
     }
+
+    /// <summary>A pattern as <paramref name="length"/> little-endian bytes.</summary>
+    public static byte[] ToBytes(BigInteger pattern, int length)
+    {
+        byte[] raw = pattern.ToByteArray(isUnsigned: true);
+        var bytes = new byte[length];
+        raw.AsSpan(0, Math.Min(raw.Length, length)).CopyTo(bytes);
+        return bytes;
+    }
+
+    public static BigInteger FromBytes(byte[] littleEndian) => new(littleEndian, isUnsigned: true);
 
     // ------------------------------------------------------------------
     // Comparing, and describing failures
@@ -175,9 +195,25 @@ internal static class FloatOracle
     public static ulong RandomIeeeBits(Random rng, int w, int p, params long[] hotTops)
     {
         int f = p - 1;
+        ulong field = RandomExponentField(rng, w, hotTops);
+        ulong sign = (ulong)rng.Next(2) << (w + f);
+        return sign | (field << f) | RandomField(rng, f);
+    }
+
+    /// <summary>The same for formats of any width.</summary>
+    public static BigInteger RandomIeeePattern(Random rng, int w, int p, params long[] hotTops)
+    {
+        int f = p - 1;
+        ulong field = RandomExponentField(rng, w, hotTops);
+        BigInteger sign = (BigInteger)rng.Next(2) << (w + f);
+        return sign | ((BigInteger)field << f) | RandomWideField(rng, f);
+    }
+
+    private static ulong RandomExponentField(Random rng, int w, long[] hotTops)
+    {
         ulong maxField = (1UL << w) - 1;
         long bias = (long)(maxField / 2);
-        ulong field = rng.Next(12) switch
+        return rng.Next(12) switch
         {
             0 => 0,                                               // zero or subnormal
             1 => 1,                                               // the smallest normal binade
@@ -188,8 +224,32 @@ internal static class FloatOracle
                 (ulong)Math.Clamp(hotTops[rng.Next(hotTops.Length)] + rng.Next(-3, 4) + bias, 0, (long)maxField - 1),
             _ => 1 + (ulong)rng.NextInt64((long)maxField - 1),    // any normal
         };
-        ulong sign = (ulong)rng.Next(2) << (w + f);
-        return sign | (field << f) | RandomField(rng, f);
+    }
+
+    /// <summary>A random field of any width, biased the same way as <see cref="RandomField"/>.</summary>
+    public static BigInteger RandomWideField(Random rng, int bits)
+    {
+        BigInteger mask = (BigInteger.One << bits) - 1;
+        switch (rng.Next(6))
+        {
+            case 0: return 0;
+            case 1: return mask;
+            case 2: return BigInteger.One << rng.Next(bits);
+            case 3: return mask ^ (BigInteger.One << rng.Next(bits));
+            case 4:
+                BigInteger v = 0;
+                for (int at = 0; at < bits;)
+                {
+                    int length = rng.Next(1, 40);
+                    if (rng.Next(2) == 0) v |= ((BigInteger.One << length) - 1) << at;
+                    at += length;
+                }
+                return v & mask;
+            default:
+                var bytes = new byte[(bits >> 3) + 1];
+                rng.NextBytes(bytes);
+                return new BigInteger(bytes, isUnsigned: true) & mask;
+        }
     }
 
     /// <summary>A random <paramref name="bits"/>-bit field, biased toward runs and edges.</summary>

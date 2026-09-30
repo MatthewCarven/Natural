@@ -22,9 +22,14 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
 - `src/Natural/ApFloat.cs` — IEEE-style arbitrary-precision float: ±m × 2^e, m odd,
   `long` exponent, precision per value. All rounding goes through `RoundExact`
   (compute exact, round once). In progress — see TODO for the plan.
-- `src/Natural/ApFloat.Ieee.cs` — IEEE formats up to 64 bits: one encoder/decoder
-  taking (exponent bits, precision), and `Half`/`float`/`double` on top of it.
-  Encoding rounds once, straight to the format (subnormals via `RoundExact`'s `minExp`).
+- `src/Natural/IeeeFormat.cs` — an IEEE binary format as (exponent bits, precision).
+  `IeeeFormat.Binary(k)` is binary{k} per IEEE 754-2008 §3.6. Its width formula is
+  done in integers, from k^8's bit length.
+- `src/Natural/ApFloat.Ieee.cs` — one encoder/decoder for any `IeeeFormat`, working on
+  the bit pattern as little-endian words. It backs `ToIeeeBytes`/`FromIeeeBytes`
+  (little-endian by default) and the `Half`/`float`/`double` conversions. Encoding
+  rounds once, straight to the format (subnormals via `RoundExact`'s `minExp`). NaN
+  always encodes as the one quiet NaN.
 - `tests/Natural.Tests` — xUnit. `Oracle.cs` converts to/from `BigInteger` through
   raw magnitude bytes, so arithmetic tests don't depend on the text code.
   `FloatOracle.cs` is ApFloat's reference: exact rationals rounded by long division

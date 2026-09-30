@@ -74,7 +74,7 @@ public class ApFloatIeeeTests
                     ApFloat x = ApFloat.FromIeeeBits(bits, w, p);
                     Assert.Equal(p, x.Precision);
                     Assert.Equal(Decode(bits, w, p), Describe(x));
-                    ulong expected = x.IsNaN ? CanonicalNaN(w, p) : bits;
+                    ulong expected = x.IsNaN ? (ulong)CanonicalNaN(w, p) : bits;
                     foreach (RoundingMode mode in Modes)
                         Assert.True(expected == x.ToIeeeBits(w, p, mode), $"w={w} p={p} {bits:X} {mode}");
                 }
@@ -132,7 +132,7 @@ public class ApFloatIeeeTests
                 _ => new ApFloat(ToAp(m), e, Exact),
             };
             RoundingMode mode = Modes[rng.Next(4)];
-            ulong expected = Encode(x, w, p, mode);
+            ulong expected = (ulong)Encode(x, w, p, mode);
             ulong actual = x.ToIeeeBits(w, p, mode);
             Assert.True(expected == actual, $"{Describe(x)} to w={w} p={p}, {mode}: expected {expected:X}, got {actual:X}");
 

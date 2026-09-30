@@ -3,14 +3,14 @@
 ## ApFloat — the plan (agreed 2026-09-27; core written 2026-09-30)
 Arbitrary precision in the arithmetic, IEEE 754 in behaviour and in the byte format.
 
-**Built so far** (`src/Natural/ApFloat.cs`, `ApFloat.Ieee.cs`; 36 tests):
+**Built so far** (`src/Natural/ApFloat.cs`, `ApFloat.Ieee.cs`, `IeeeFormat.cs`; 96 tests):
 ±m × 2^e with m odd and a signed `long` exponent; precision per value (default 256,
 Matthew's choice, 2026-09-30);
 ±0, ±∞, NaN; `RoundExact`, the single rounding point (4 IEEE modes, sticky bit,
 `minExp` floor for subnormals); correctly rounded `+ − × ÷` with IEEE special
 cases; the big-exponent-gap shortcut in `Add`; IEEE comparisons; integer conversions;
-hex-float `ToString` (C's `%a`); IEEE encode/decode for any format ≤ 64 bits, and
-`Half`/`float`/`double` both ways.
+hex-float `ToString` (C's `%a`); IEEE bytes in any `binary{k}` or custom format, either
+byte order; `Half`/`float`/`double` both ways.
 
 ### Open question for Matthew (from session 1)
 - [ ] **Double rounding at 53 bits in the subnormal range.** ApFloat's exponent is
@@ -20,9 +20,11 @@ hex-float `ToString` (C's `%a`); IEEE encode/decode for any format ≤ 64 bits, 
       quotients differ in the last place (10,454 of 987,109 products). Rounding the exact
       result once is always right (`Multiply(x, y, 106).ToDouble()`), and the tests do
       that. Options: leave it, since it's documented on the type and inherent to an
-      unbounded exponent; or add arithmetic *in a format*, e.g. `Multiply(x, y, Binary64)`,
-      passing the format's `minExp` down to `RoundExact`. That is a small change, since
-      the floor already exists.
+      unbounded exponent; or add arithmetic *in a format*, e.g.
+      `ApFloat.Multiply(x, y, IeeeFormat.Binary64)`, passing the format's `minExp` down to
+      `RoundExact`. That is a small change: the floor exists, and since session 2 so does
+      `IeeeFormat`. It would give exact IEEE semantics for any binary{k}, subnormals
+      included, in all four modes.
 
 ### Session 1 — prove the core, then Half / float / double (done 2026-09-30)
 - [x] **Reference oracle in the tests** (`FloatOracle.cs`): exact rationals rounded by
@@ -49,19 +51,24 @@ hex-float `ToString` (C's `%a`); IEEE encode/decode for any format ≤ 64 bits, 
       for 8 formats × 4 modes; narrowing matches the hardware's `(float)`/`(Half)`.
 - [x] Mutation check: 12 real mutations, all red. Details in WORKLOG.
 
-### Session 2 — IEEE `binary{k}`, any width
-- [ ] Generalise the encoder to bytes: k = 16, 32, 64, 128, then any multiple of 32
-      from 128 (IEEE 754-2008 §3.6): w = round(4·log2 k) − 13, p = k − w. Do the
-      round() in integers: w + 13 = t where 2^(2t−1) ≤ k^8 < 2^(2t+1) — no floating
-      log anywhere.
-- [ ] Byte order: little-endian by default (as `BitConverter` on x86), big-endian on request.
-- [ ] **NaN is canonical** (Matthew, 2026-09-30): encode always writes the one quiet NaN
-      (sign 0, exponent all ones, top fraction bit 1, the rest 0). Decode reads any NaN
-      (quiet or signalling, any payload) as plain NaN. Note .NET's `double.NaN` is
-      `0xFFF8…` (sign bit set), so the tests check `IsNaN`, not the bit pattern.
-- [ ] Tests: k = 16/32/64 bit-identical to `Half`/`float`/`double`; binary128 known
-      vectors (1.0 = `3FFF 0000…`, π = `4000 921F B544 42D1 8469 898C C517 01B8`);
-      binary256 1.0 = `3FFF F000…`; round trips at k = 160, 256, 512, 1024.
+### Session 2 — IEEE `binary{k}`, any width (done 2026-09-30)
+- [x] `IeeeFormat` (exponent bits, precision), with `IeeeFormat.Binary(k)` for k = 16,
+      32, 64 and multiples of 32 from 128 up to 480,768 (the widest whose exponent fits a
+      `long`: w = 62). The width formula is `(bitLength(k^8) >> 1) − 13`, with k^8 an
+      `ApInt`, so there's no floating log. Custom formats work too (bfloat16 is (8, 8)).
+- [x] `ToIeeeBytes(format, mode, bigEndian)` / `FromIeeeBytes(bytes, format, bigEndian)`:
+      little-endian by default. One encoder/decoder over words of any width now backs
+      `Half`/`float`/`double` too.
+- [x] **NaN is canonical**: encode writes the one quiet NaN; decode reads any NaN, any
+      payload or sign, as NaN.
+- [x] Tests: binary16/32/64 bytes identical to `BitConverter` both ways and in both byte
+      orders (every `Half`, 50k each of `float`/`double`). binary128 vectors (1, −2, π,
+      1/3, max, min normal/subnormal, −0, ±∞, NaN) and the same for binary256, with π and
+      1/3 from an independent Python encoder. π brackets correctly in every mode.
+      Round trips at 113/160/256/512/1024 bits, bfloat16, an 80-bit and an 8-bit format.
+      The encoder against the oracle for 5 formats × 4 modes. bfloat16 toward zero is
+      exactly a float's top two bytes.
+- [x] Mutation check: 13 of 13 red. Details in WORKLOG.
 
 ### Session 3 — decimal text, built for eyeballing (all three agreed 2026-09-30)
 Matthew (2026-09-30): zeros aren't noise, they're alignment. Read a column of numbers
