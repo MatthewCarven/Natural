@@ -137,6 +137,102 @@ internal static class FloatOracle
     public static BigInteger FromBytes(byte[] littleEndian) => new(littleEndian, isUnsigned: true);
 
     // ------------------------------------------------------------------
+    // Decimal text: the same long division, in base ten
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// |x| × 10^t rounded to an integer (directed modes look at x's sign). Also says whether
+    /// it was an exact tie, which is where IEEE (to even) and .NET's own formatting (away
+    /// from zero) part company.
+    /// </summary>
+    public static (BigInteger Q, bool Tie) ScaledRound(ApFloat x, long t, RoundingMode mode)
+    {
+        var (num, den) = ToRational(x);
+        num = BigInteger.Abs(num);
+        if (t >= 0) num *= BigInteger.Pow(10, (int)t);
+        else den *= BigInteger.Pow(10, (int)-t);
+        BigInteger q = BigInteger.DivRem(num, den, out BigInteger rem);
+        int vsHalf = (rem * 2).CompareTo(den);
+        bool up = mode switch
+        {
+            RoundingMode.ToNearestEven => vsHalf > 0 || (vsHalf == 0 && !q.IsEven),
+            RoundingMode.TowardZero => false,
+            RoundingMode.TowardPositive => !x.IsNegative && !rem.IsZero,
+            RoundingMode.TowardNegative => x.IsNegative && !rem.IsZero,
+            _ => throw new ArgumentOutOfRangeException(nameof(mode)),
+        };
+        return (up ? q + 1 : q, vsHalf == 0);
+    }
+
+    /// <summary>floor(log10 |x|) for a finite non-zero x.</summary>
+    public static long DecimalExponent(ApFloat x)
+    {
+        var (num, den) = ToRational(x);
+        num = BigInteger.Abs(num);
+        long e = (long)Math.Floor(BigInteger.Log10(num) - BigInteger.Log10(den));
+        while (ComparePow10(num, den, e) < 0) e--;
+        while (ComparePow10(num, den, e + 1) >= 0) e++;
+        return e;
+    }
+
+    private static int ComparePow10(BigInteger num, BigInteger den, long e) =>
+        e >= 0 ? num.CompareTo(den * BigInteger.Pow(10, (int)e)) : (num * BigInteger.Pow(10, (int)-e)).CompareTo(den);
+
+    /// <summary>What "E&lt;n&gt;" should print (invariant culture), and whether rounding met a tie.</summary>
+    public static (string Text, bool Tie) Scientific(ApFloat x, int n, RoundingMode mode, char e = 'E')
+    {
+        string sign = x.IsNegative ? "-" : "";
+        string digits;
+        long exponent = 0;
+        bool tie = false;
+        if (x.IsZero) digits = new string('0', n + 1);
+        else
+        {
+            exponent = DecimalExponent(x);
+            (BigInteger q, tie) = ScaledRound(x, n - exponent, mode);
+            if (q == BigInteger.Pow(10, n + 1))
+            {
+                q /= 10;
+                exponent++;
+            }
+            digits = q.ToString();
+        }
+        string body = n > 0 ? $"{digits[0]}.{digits[1..]}" : digits;
+        return ($"{sign}{body}{e}{(exponent < 0 ? "-" : "+")}{Math.Abs(exponent):000}", tie);
+    }
+
+    /// <summary>What "F&lt;n&gt;" should print (invariant culture), and whether rounding met a tie.</summary>
+    public static (string Text, bool Tie) Fixed(ApFloat x, int n, RoundingMode mode)
+    {
+        string sign = x.IsNegative ? "-" : "";
+        var (q, tie) = x.IsZero ? (BigInteger.Zero, false) : ScaledRound(x, n, mode);
+        string digits = q.ToString().PadLeft(n + 1, '0');
+        string body = n > 0 ? $"{digits[..^n]}.{digits[^n..]}" : digits;
+        return (sign + body, tie);
+    }
+
+    /// <summary>
+    /// Any decimal text reduced to its significant digits and the power of ten of the first:
+    /// "0.00120" and "1.2E-003" are both "12e-3". Zero is "0".
+    /// </summary>
+    public static string Canonical(string text)
+    {
+        text = text.TrimStart('-', '+');
+        int e = text.IndexOfAny(['E', 'e']);
+        long exponent = e < 0 ? 0 : long.Parse(text[(e + 1)..], System.Globalization.CultureInfo.InvariantCulture);
+        string mantissa = e < 0 ? text : text[..e];
+        int point = mantissa.IndexOf('.');
+        string whole = point < 0 ? mantissa : mantissa[..point];
+        string digits = (whole + (point < 0 ? "" : mantissa[(point + 1)..])).TrimStart('0');
+        if (digits.Length == 0) return "0";
+        // The first significant digit sits (whole digits after the leading zeros) places up.
+        long lead = exponent + whole.TrimStart('0').Length - 1;
+        if (whole.TrimStart('0').Length == 0)
+            lead = exponent - (mantissa[(point + 1)..].Length - mantissa[(point + 1)..].TrimStart('0').Length) - 1;
+        return $"{digits.TrimEnd('0')}e{lead}";
+    }
+
+    // ------------------------------------------------------------------
     // Comparing, and describing failures
     // ------------------------------------------------------------------
 

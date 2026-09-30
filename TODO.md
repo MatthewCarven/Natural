@@ -3,14 +3,14 @@
 ## ApFloat — the plan (agreed 2026-09-27; core written 2026-09-30)
 Arbitrary precision in the arithmetic, IEEE 754 in behaviour and in the byte format.
 
-**Built so far** (`src/Natural/ApFloat.cs`, `ApFloat.Ieee.cs`, `IeeeFormat.cs`; 96 tests):
+**Built so far** (`ApFloat.cs`, `ApFloat.Ieee.cs`, `ApFloat.Text.cs`, `IeeeFormat.cs`):
 ±m × 2^e with m odd and a signed `long` exponent; precision per value (default 256,
 Matthew's choice, 2026-09-30);
 ±0, ±∞, NaN; `RoundExact`, the single rounding point (4 IEEE modes, sticky bit,
 `minExp` floor for subnormals); correctly rounded `+ − × ÷` with IEEE special
 cases; the big-exponent-gap shortcut in `Add`; IEEE comparisons; integer conversions;
-hex-float `ToString` (C's `%a`); IEEE bytes in any `binary{k}` or custom format, either
-byte order; `Half`/`float`/`double` both ways.
+IEEE bytes in any `binary{k}` or custom format, either byte order; `Half`/`float`/`double`
+both ways; decimal, binary and hex text both ways, correctly rounded in every mode.
 
 ### Open question for Matthew (from session 1)
 - [ ] **Double rounding at 53 bits in the subnormal range.** ApFloat's exponent is
@@ -70,27 +70,42 @@ byte order; `Half`/`float`/`double` both ways.
       exactly a float's top two bytes.
 - [x] Mutation check: 13 of 13 red. Details in WORKLOG.
 
-### Session 3 — decimal text, built for eyeballing (all three agreed 2026-09-30)
+### Session 3 — decimal text, built for eyeballing (done 2026-09-30)
 Matthew (2026-09-30): zeros aren't noise, they're alignment. Read a column of numbers
 like a bar graph, the way Chess Bruteforcer's `{n,10:N0}` columns work: the width of
 each number shows its size without doing any maths, and the patterns jump out.
-- [ ] **`IFormattable` / `ISpanFormattable`**, so `$"{x,12:F4}"` aligns like any .NET number.
-      - `F<n>`: fixed decimals with trailing zeros kept, so the points line up.
-      - `E<n>`: scientific with an exponent at least 3 digits wide (`3.3333E-001`),
-        so the exponent column reads as a log-scale bar.
-      - Custom `0` / `#` patterns (`00000.0000`) for zero-padding on both sides.
-      - `R`: shortest round-trip. `X` / `A`: hex float (what `ToString()` does today).
-- [ ] **Precision-width default (agreed)**: `ToString()` prints exactly the significant
-      digits the precision carries, zeros kept: ceil(1 + p·log10 2), so 17 for 53 bits and
-      62 for 200. Same precision, same width; more precision, visibly longer. It also
-      shows the truth (0.1 at 53 bits is `0.10000000000000001`). Shortest round-trip
-      stays available as `R`.
-- [ ] **Binary-point view** (`B<n>`, matching `ApInt.ToString("B")`): significand bits lined up on the binary point, so
-      the leading 1's position (the power of two) is the bar.
-- [ ] Exact decimal is always finite (m × 2^−e = m × 5^e / 10^e), so every format can
-      round from the exact digits, correctly, in any mode.
-- [ ] `Parse`, correctly rounded: digits × 10^exp as an exact rational, then one
-      `DivRem` + sticky + `RoundExact`; every piece already exists. Hex floats too.
+- [x] **Default `ToString()`**: every digit the precision carries, zeros kept, **always
+      scientific** (Matthew's pick, 2026-09-30): `1.0000000000000001E-001` for 0.1 at 53
+      bits. Same precision, same width, so `{x,24}` columns line up on the point and the E.
+      `DecimalDigitsFor(p)` = floor(p·log10 2) + 2, from a 128-bit fixed-point log10 2
+      held as an `ApInt`: 17 for 53 bits, 79 for the 256 default.
+- [x] **Ties go to even** (Matthew's pick): 0.125 F2 is `0.12`, where .NET says `0.13`.
+      Every format takes a `RoundingMode` too: `ToString(format, provider, mode)`.
+- [x] `IFormattable` / `ISpanFormattable`: `E<n>` (three-digit exponent, the same as .NET's
+      E), `F<n>`, `G<n>`, `R`/`G` (shortest round trip, plain from 1E-005 up to the digit
+      count, otherwise scientific), `B<n>` (binary point, "." always), `A`/`X<n>` (C's `%a`,
+      "." always), and custom `0`/`#`/`.`/`,` patterns with literal text before or after.
+      Sections, `%` and exponents in custom patterns throw rather than print wrongly.
+- [x] Output rounds from the exact value: |v| × 10^t = m × 5^t × 2^(e+t), through
+      `RoundExact` with `minExp: 0`.
+- [x] `Parse` / `TryParse` / `IParsable`: decimal (culture separator, `_` between digits),
+      hex floats, `0b` binary with a `p` exponent, NaN/Infinity/inf/∞. The result is
+      digits × 10^exp as an exact rational, then one `DivRem` + sticky + `RoundExact`,
+      at a given precision and mode.
+- [x] 150+ tests against a `BigInteger` oracle and against .NET's own formatting and
+      parsing. Mutation check in WORKLOG.
+
+### Open, from session 3
+- [ ] **Parsing a huge decimal exponent is slow, not refused.** "1e1000000" builds
+      5^1000000 (2.3M bits) with the bitwise multiply, which takes minutes. Options:
+      leave it (ApInt is the same with million-digit input), or cap |exponent| and throw
+      `OverflowException` past the cap. Formatting a value with a huge binary exponent
+      costs the same way.
+- [ ] **Found in .NET 10.0.12, not ours:** `double.ToString("R")` (and plain `ToString()`)
+      for 2^-25 and 2^-958 gives 16 digits that don't read back. They parse to the double
+      below, because a power of two's lower neighbour is only half as far away. Python's
+      repr and ApFloat both give 17. Pinned in `ShortestMatchesDotNetR`. Reporting it
+      upstream (dotnet/runtime) would be Matthew's call.
 
 ### Later
 - [ ] `FusedMultiplyAdd` (exact a×b + c, round once — nearly free here), `Sqrt`

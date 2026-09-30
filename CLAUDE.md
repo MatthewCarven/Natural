@@ -30,6 +30,12 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   (little-endian by default) and the `Half`/`float`/`double` conversions. Encoding
   rounds once, straight to the format (subnormals via `RoundExact`'s `minExp`). NaN
   always encodes as the one quiet NaN.
+- `src/Natural/ApFloat.Text.cs` — decimal text both ways, `IFormattable`/`ISpanFormattable`/
+  `IParsable`. The default `ToString()` is always scientific with every digit the precision
+  carries (`DecimalDigitsFor(p)`, 17 for 53 bits), so a column lines up (Matthew's choice).
+  Output starts from the exact value (m × 5^k / 10^k) and rounds once through `RoundExact`,
+  ties to even (not .NET's away-from-zero). Parse builds digits × 10^exp exactly and rounds
+  once. Powers of five are cached below 5^4096.
 - `tests/Natural.Tests` — xUnit. `Oracle.cs` converts to/from `BigInteger` through
   raw magnitude bytes, so arithmetic tests don't depend on the text code.
   `FloatOracle.cs` is ApFloat's reference: exact rationals rounded by long division

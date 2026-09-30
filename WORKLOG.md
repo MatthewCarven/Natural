@@ -199,3 +199,56 @@ overflow going to ∞; the sign read one bit low.
 The session 1 question (double rounding among the subnormals at 53 bits, and whether to
 add arithmetic *in a format*) is still open. `IeeeFormat` now exists, so that option
 would be `ApFloat.Multiply(x, y, IeeeFormat.Binary64)`.
+
+## 2026-09-30 — ApFloat session 3: decimal text, built for eyeballing
+
+**Tests 155 → 314**, all green in ~7 s.
+
+Two design calls from Matthew at the start. The default `ToString()` is **always
+scientific** with every digit the precision carries, zeros kept: `1.0000000000000001E-001`.
+Every value of one precision is the same width, so a right-aligned column lines up on the
+point and the E. And exact **ties go to even** (0.125 F2 is `0.12`; .NET says `0.13`).
+
+`src/Natural/ApFloat.Text.cs`:
+- `DecimalDigitsFor(p)` = floor(p·log10 2) + 2, the smallest N with 10^(N-1) > 2^p (17 for
+  a double, 79 for the 256 default). log10 2 is a 128-bit fixed-point `ApInt` constant, so
+  there's no floating point. Checked against 2^p's digit count for every p up to 3000.
+- Output starts from the exact value, |v| × 10^t = m × 5^t × 2^(e+t), and rounds it to an
+  integer through `RoundExact` with `minExp: 0`. So text shares the single rounding
+  point, and every format takes a `RoundingMode`. The decimal exponent starts from an
+  estimate, floor(Top · log10 2), and is corrected exactly.
+- Formats: default, `E<n>`, `F<n>`, `G<n>`, `R`/`G` (shortest round trip, found by binary
+  search over the digit count), `B<n>` (binary point), `A`/`X<n>` (C's `%a`), and custom
+  `0 # . ,` patterns with literals. Custom sections, `%` and exponents throw rather than
+  print something wrong. `IFormattable`, `ISpanFormattable`, `IParsable`; the culture
+  decides the separator and signs, except for hex and binary, which always use ".".
+- `Parse`: decimal (with `_` between digits), hex floats, `0b` binary with a `p` exponent,
+  NaN/Infinity/inf/∞. It builds digits × 10^exp exactly and makes one rounding, at a
+  chosen precision and mode.
+
+Checked against a new `BigInteger` oracle (`ScaledRound`, `Scientific`, `Fixed` in
+`FloatOracle`) in every mode, and against .NET itself. `E16` equals ApFloat's default for
+doubles; `E<n>`, `F<n>` and `G<n>` match .NET's digits (ties excluded, since .NET goes away
+from zero); `R` matches .NET's digits in the normal range; `Parse` matches `double.Parse`.
+
+**Found: .NET 10.0.12's `double.ToString("R")` doesn't round-trip 2^-25 or 2^-958.** Each
+gives 16 digits that parse to the double below: the lower neighbour of a power of two is
+half as far away, and the 16-digit text lands outside that half-gap. Python's repr gives 17
+digits, as ApFloat does. Pinned in `ShortestMatchesDotNetR`. And by design, ApFloat's `R`
+differs from .NET's for subnormal doubles (2^-1074 needs 17 digits at 53 bits with an
+unbounded exponent, not "5E-324").
+
+**Speed.** The first run took 37 s, most of it in `R` over 20,000 doubles, and it was
+recomputing 5^n by squaring each time. Powers of five below 5^4096 are now cached,
+built as 5x = 4x + x. `Magnitude.DivRem` now also brings the dividend's top
+(divisor bits − 1) bits down in one shift, since they can't make a quotient bit: a
+700-bit over 697-bit division takes 4 steps, not 700. The suite went back to ~7 s.
+
+**Mutation check**: 16 mutations, 15 red, and 1 caught as a hang. Rounding to even
+integers makes `DecimalExponent` oscillate forever; I killed the test host by hand so the
+script could restore the file. One survived at first: hex rounding to 4n bits instead of
+4n + 1. Every hex test case happened to agree either way, so two cases now go through the
+kept bit (1 + 2^-12, and the tie 0x1.0018): red.
+
+Open, in TODO: parsing "1e1000000" is slow (the 5^1000000 multiply) rather than refused.
+Reporting the .NET bug upstream is Matthew's call.

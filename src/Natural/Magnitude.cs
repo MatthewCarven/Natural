@@ -153,7 +153,14 @@ internal static class Magnitude
         // holds it. It's worked on in place, so nothing is allocated per bit.
         var rem = new uint[divisor.Length + 1];
 
-        for (long i = BitLength(dividend) - 1; i >= 0; i--)
+        // The dividend's top (divisor bits - 1) bits are below the divisor however they're
+        // set, so their quotient bits are all 0: bring them down in one shift and start
+        // after them. A 700-bit dividend over a 697-bit divisor then takes 4 steps, not 700.
+        long n = BitLength(dividend), d = BitLength(divisor);
+        uint[] top = ShiftRight(dividend, n - (d - 1));
+        Array.Copy(top, rem, top.Length);
+
+        for (long i = n - d; i >= 0; i--)
         {
             uint bit = (dividend[i >> 5] >> (int)(i & 31)) & 1;
             ShiftLeftOneInPlace(rem, bit);

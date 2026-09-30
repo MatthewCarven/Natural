@@ -1,5 +1,3 @@
-using System.Globalization;
-
 namespace Natural;
 
 /// <summary>The four IEEE 754 rounding directions.</summary>
@@ -37,7 +35,8 @@ public enum RoundingMode
 public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloat>, IComparable
 {
     /// <summary>
-    /// 256 bits, about 77 significant decimal digits. (Matthew's choice. For comparison,
+    /// 256 bits, about 77 significant decimal digits (79 in text, enough to tell every
+    /// value apart). (Matthew's choice. For comparison,
     /// <see cref="double"/> has 53 and IEEE binary256 has 237.)
     /// </summary>
     public const int DefaultPrecision = 256;
@@ -393,31 +392,4 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
     public static bool operator >(ApFloat a, ApFloat b) => !a.IsNaN && !b.IsNaN && CompareValues(a, b) > 0;
     public static bool operator <=(ApFloat a, ApFloat b) => !a.IsNaN && !b.IsNaN && CompareValues(a, b) <= 0;
     public static bool operator >=(ApFloat a, ApFloat b) => !a.IsNaN && !b.IsNaN && CompareValues(a, b) >= 0;
-
-    // ------------------------------------------------------------------
-    // Text (decimal comes later; hex is exact and needs no rounding)
-    // ------------------------------------------------------------------
-
-    /// <summary>
-    /// Hexadecimal floating point, as C's printf("%a") writes it: 3.0 is "0x1.8p+1"
-    /// (1.1 in binary, times 2^1), 0.1 is "0x1.999999999999ap-4". Exact, always.
-    /// </summary>
-    public override string ToString()
-    {
-        switch (_kind)
-        {
-            case Kind.NaN: return "NaN";
-            case Kind.Infinity: return _negative ? "-Infinity" : "Infinity";
-            case Kind.Zero: return _negative ? "-0x0p+0" : "0x0p+0";
-        }
-
-        // The leading 1 sits alone before the point; pad the fraction bits out to whole
-        // hex digits. That makes the bit count 1 + 4k, so the hex string starts with "1".
-        long fractionBits = Magnitude.BitLength(Mant) - 1;
-        long pad = (4 - fractionBits % 4) % 4;
-        string hex = ApInt.FromLimbs(Magnitude.ShiftLeft(Mant, pad), false).ToString("x");
-        string exponent = Top.ToString("+0;-0", CultureInfo.InvariantCulture);
-        string body = hex.Length > 1 ? $"1.{hex[1..]}" : "1";
-        return $"{(_negative ? "-" : "")}0x{body}p{exponent}";
-    }
 }
