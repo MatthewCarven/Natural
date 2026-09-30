@@ -173,8 +173,9 @@ machinery must be a general piece, not tied to parsing (Matthew's reuse aim belo
 **Ask Matthew first** (one short question with a preview, recommendation first, as usual):
 the API shape below. Then build.
 
-What actually takes time now (Release, measured 2026-09-30), so what a job must be able to
-pause:
+What actually takes time now (Release, measured 2026-09-30, by `tests/bench/timing.cs`; run it
+first as the baseline, and remember this machine's two speeds: its interval timings came in
+0.2 ms one hour and 0.5 ms the next), so what a job must be able to pause:
 - Long digit strings in: ApInt's decimal loop (x·10 + d per digit) is quadratic. 30,000 digits
   take 0.75 s, so a million would take about 15 minutes.
 - Long digit strings out: double dabble, one pass per bit. `F0` of 1e30000 takes 0.22 s.

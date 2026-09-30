@@ -56,6 +56,7 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
 
 ```
 dotnet test Natural.slnx
+dotnet run -c Release tests/bench/timing.cs            # decimal text timings (-- quick skips the exact route)
 ```
 
 ## Conventions
