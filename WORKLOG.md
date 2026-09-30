@@ -291,3 +291,17 @@ have known cases. The session 1 probe (a million products landing subnormal) re-
 
 The operators (`x * y`) keep the unbounded exponent, and the class doc says so and points
 to the format overloads.
+
+## 2026-09-30 — Parse cap for huge decimal exponents
+
+Matthew's call. Exact parsing builds 5^|n| in full, which is slow: 1e10000 takes 0.1 s,
+1e30000 0.5 s, 1e100000 5 s, growing with the square of n (measured with Release on this
+machine, where `ToString()` of the same values took 0.14 / 1.5 / 15 s). `MaxDecimalExponent`
+= 100,000 is now checked before any arithmetic. Past it, `Parse` throws `OverflowException`
+(.NET's convention for a number too big, as `int.Parse` does) and `TryParse` returns false.
+The parse core now reports why it failed (`ParseOutcome`): a malformed exponent is a
+`FormatException`, and one past a long is an `OverflowException`. Zeros and hex/binary text
+are unaffected. Formatting isn't capped. Tests 327 → 333. Mutation check: 4 of 4 red.
+
+Matthew then asked for an uncapped "reference mode": iterative, resumable, with a
+"complete?" flag. The plan in progress is in TODO under "Proposed".

@@ -450,6 +450,17 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     // Parsing
     // ------------------------------------------------------------------
 
+    /// <summary>
+    /// The largest decimal exponent <see cref="Parse(string)"/> accepts, either way. Decimal
+    /// text is read exactly, as digits × 10^n (the point moved to the end of the digits), and
+    /// that needs 5^|n| built in full: the cost grows with the square of n. On the machine
+    /// this was measured on, 1e10000 parsed in 0.1 s and 1e100000 in 5 s, so past this it
+    /// would be minutes, then hours, from a few characters of input. Beyond it Parse throws
+    /// <see cref="OverflowException"/> (TryParse returns false). Hex and binary text have no
+    /// limit ("0x1p+3321929" is instant), and a zero parses whatever its exponent.
+    /// </summary>
+    public const int MaxDecimalExponent = 100_000;
+
     /// <summary>Parses at <see cref="DefaultPrecision"/>, rounding to nearest, in the current culture. See the full overload.</summary>
     public static ApFloat Parse(string s) => Parse(s, DefaultPrecision);
 
@@ -462,8 +473,16 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     /// floating point ("0x1.8p+1", C's syntax); binary ("0b101.01p-3"); NaN; Infinity (or inf, ∞).
     /// Hex and binary use "." for the point; decimal uses the culture's separator.
     /// </summary>
+    /// <exception cref="FormatException">It isn't a number.</exception>
+    /// <exception cref="OverflowException">A decimal exponent past <see cref="MaxDecimalExponent"/>, or any exponent past a long.</exception>
     public static ApFloat Parse(string s, int precision, RoundingMode mode = RoundingMode.ToNearestEven, IFormatProvider? provider = null) =>
-        TryParse(s, precision, mode, provider, out ApFloat result) ? result : throw new FormatException($"Not a number: \"{s}\".");
+        ParseCore(s, precision, mode, provider, out ApFloat result) switch
+        {
+            ParseOutcome.Parsed => result,
+            ParseOutcome.TooLarge => throw new OverflowException(
+                $"\"{s}\": the exponent is too large to read exactly (decimal exponents stop at ±{MaxDecimalExponent}; hex has no limit)."),
+            _ => throw new FormatException($"Not a number: \"{s}\"."),
+        };
 
     public static bool TryParse([NotNullWhen(true)] string? s, out ApFloat result) =>
         TryParse(s, DefaultPrecision, RoundingMode.ToNearestEven, null, out result);
@@ -471,11 +490,16 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out ApFloat result) =>
         TryParse(s, DefaultPrecision, RoundingMode.ToNearestEven, provider, out result);
 
-    public static bool TryParse([NotNullWhen(true)] string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result)
+    public static bool TryParse([NotNullWhen(true)] string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result) =>
+        ParseCore(s, precision, mode, provider, out result) == ParseOutcome.Parsed;
+
+    private enum ParseOutcome { Parsed, NotANumber, TooLarge }
+
+    private static ParseOutcome ParseCore(string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result)
     {
         CheckPrecision(precision);
         result = default;
-        if (s is null) return false;
+        if (s is null) return ParseOutcome.NotANumber;
         NumberFormatInfo nfi = NumberFormatInfo.GetInstance(provider);
         ReadOnlySpan<char> span = s.AsSpan().Trim();
 
@@ -496,25 +520,25 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         if (IsWord(span, nfi.NaNSymbol, "NaN"))
         {
             result = NaNOf(precision);
-            return true;
+            return ParseOutcome.Parsed;
         }
         if (IsWord(span, nfi.PositiveInfinitySymbol, "Infinity", "inf", "∞"))
         {
             result = InfinityOf(negative, precision);
-            return true;
+            return ParseOutcome.Parsed;
         }
 
         try
         {
             if (span.Length > 2 && span[0] == '0' && span[1] is 'x' or 'X')
-                return TryParsePowerOfTwoRadix(span[2..], 4, negative, precision, mode, out result);
+                return ParsePowerOfTwoRadix(span[2..], 4, negative, precision, mode, out result);
             if (span.Length > 2 && span[0] == '0' && span[1] is 'b' or 'B')
-                return TryParsePowerOfTwoRadix(span[2..], 1, negative, precision, mode, out result);
-            return TryParseDecimal(span, negative, precision, mode, nfi, out result);
+                return ParsePowerOfTwoRadix(span[2..], 1, negative, precision, mode, out result);
+            return ParseDecimal(span, negative, precision, mode, nfi, out result);
         }
         catch (OverflowException)
         {
-            return false;   // an exponent beyond a long
+            return ParseOutcome.TooLarge;   // an exponent past a long, once the point is moved
         }
     }
 
@@ -526,51 +550,52 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     }
 
     /// <summary>digits [separator digits] [e [sign] digits]: the exact rational digits × 10^exp, rounded once.</summary>
-    private static bool TryParseDecimal(ReadOnlySpan<char> span, bool negative, int precision, RoundingMode mode,
-                                        NumberFormatInfo nfi, out ApFloat result)
+    private static ParseOutcome ParseDecimal(ReadOnlySpan<char> span, bool negative, int precision, RoundingMode mode,
+                                             NumberFormatInfo nfi, out ApFloat result)
     {
         result = default;
         int e = span.IndexOfAny('e', 'E');
         ReadOnlySpan<char> mantissa = e < 0 ? span : span[..e];
         long exponent = 0;
-        if (e >= 0 && !TryParseExponent(span[(e + 1)..], out exponent)) return false;
+        if (e >= 0 && ParseExponent(span[(e + 1)..], out exponent) is var outcome and not ParseOutcome.Parsed) return outcome;
 
         string separator = nfi.NumberDecimalSeparator;
         int point = mantissa.IndexOf(separator, StringComparison.Ordinal);
         ReadOnlySpan<char> whole = point < 0 ? mantissa : mantissa[..point];
         ReadOnlySpan<char> fraction = point < 0 ? [] : mantissa[(point + separator.Length)..];
-        if (whole.Length + fraction.Length == 0) return false;
-        if (!DigitRun(whole, 10, allowEmpty: true) || !DigitRun(fraction, 10, allowEmpty: true)) return false;
+        if (whole.Length + fraction.Length == 0) return ParseOutcome.NotANumber;
+        if (!DigitRun(whole, 10, allowEmpty: true) || !DigitRun(fraction, 10, allowEmpty: true)) return ParseOutcome.NotANumber;
 
         string digits = string.Concat(whole, fraction);
         ApInt d = ApInt.Parse(digits.Length == 0 ? "0" : digits);
-        int fractionDigits = fraction.Length - fraction.Count('_');
-        result = FromDecimal(negative, d.Limbs, checked(exponent - fractionDigits), precision, mode);
-        return true;
+        long n = checked(exponent - (fraction.Length - fraction.Count('_')));
+        if (!d.IsZero && Math.Abs(n) > MaxDecimalExponent) return ParseOutcome.TooLarge;   // before any arithmetic
+        result = FromDecimal(negative, d.Limbs, n, precision, mode);
+        return ParseOutcome.Parsed;
     }
 
     /// <summary>Hex or binary digits [. digits] [p [sign] decimal digits]: exact, then rounded to the precision.</summary>
-    private static bool TryParsePowerOfTwoRadix(ReadOnlySpan<char> span, int bitsPerDigit, bool negative, int precision,
-                                                RoundingMode mode, out ApFloat result)
+    private static ParseOutcome ParsePowerOfTwoRadix(ReadOnlySpan<char> span, int bitsPerDigit, bool negative, int precision,
+                                                     RoundingMode mode, out ApFloat result)
     {
         result = default;
         int p = span.IndexOfAny('p', 'P');
         ReadOnlySpan<char> mantissa = p < 0 ? span : span[..p];
         long exponent = 0;
-        if (p >= 0 && !TryParseExponent(span[(p + 1)..], out exponent)) return false;
+        if (p >= 0 && ParseExponent(span[(p + 1)..], out exponent) is var outcome and not ParseOutcome.Parsed) return outcome;
 
         int point = mantissa.IndexOf('.');
         ReadOnlySpan<char> whole = point < 0 ? mantissa : mantissa[..point];
         ReadOnlySpan<char> fraction = point < 0 ? [] : mantissa[(point + 1)..];
-        if (whole.Length + fraction.Length == 0) return false;
+        if (whole.Length + fraction.Length == 0) return ParseOutcome.NotANumber;
         int radix = 1 << bitsPerDigit;
-        if (!DigitRun(whole, radix, allowEmpty: true) || !DigitRun(fraction, radix, allowEmpty: true)) return false;
+        if (!DigitRun(whole, radix, allowEmpty: true) || !DigitRun(fraction, radix, allowEmpty: true)) return ParseOutcome.NotANumber;
 
         string digits = string.Concat(whole, fraction);
         ApInt m = digits.Length == 0 ? ApInt.Zero : ApInt.Parse((bitsPerDigit == 4 ? "0x" : "0b") + digits);
         long exp = checked(exponent - (long)bitsPerDigit * (fraction.Length - fraction.Count('_')));
         result = m.IsZero ? ZeroOf(negative, precision) : new ApFloat(negative ? -m : m, exp, precision, mode);
-        return true;
+        return ParseOutcome.Parsed;
     }
 
     /// <summary>Digits of the radix, with underscores allowed only between two digits.</summary>
@@ -596,8 +621,15 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         return true;
     }
 
-    private static bool TryParseExponent(ReadOnlySpan<char> text, out long exponent) =>
-        long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out exponent);
+    private static ParseOutcome ParseExponent(ReadOnlySpan<char> text, out long exponent)
+    {
+        exponent = 0;
+        ReadOnlySpan<char> digits = text.Length > 0 && text[0] is '+' or '-' ? text[1..] : text;
+        if (digits.IsEmpty || digits.ContainsAnyExceptInRange('0', '9')) return ParseOutcome.NotANumber;
+        return long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out exponent)
+            ? ParseOutcome.Parsed
+            : ParseOutcome.TooLarge;
+    }
 
     /// <summary>
     /// ±q × 10^s, correctly rounded: the exact rational, rounded once. For s &gt;= 0 that's

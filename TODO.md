@@ -91,16 +91,33 @@ each number shows its size without doing any maths, and the patterns jump out.
       parsing. Mutation check in WORKLOG.
 
 ### Open, from session 3
-- [ ] **Parsing a huge decimal exponent is slow, not refused.** "1e1000000" builds
-      5^1000000 (2.3M bits) with the bitwise multiply, which takes minutes. Options:
-      leave it (ApInt is the same with million-digit input), or cap |exponent| and throw
-      `OverflowException` past the cap. Formatting a value with a huge binary exponent
-      costs the same way.
+- [x] **Parsing a huge decimal exponent: capped** (Matthew, 2026-09-30). `MaxDecimalExponent`
+      = 100,000: past it, `Parse` throws `OverflowException` before any arithmetic, and
+      `TryParse` returns false. Measured: 1e10000 parses in 0.1 s and 1e100000 in 5 s; the
+      cost grows with the square of the exponent. Zeros, and hex/binary text, have no limit.
+      **Not capped: formatting.** `ToString()` of 1e100000 takes 15 s by the same route.
+- [ ] **A reference mode with no cap**: iterative and resumable, returning a "complete?"
+      flag. Matthew asked for it 2026-09-30. Planning with him; see "Proposed" below.
+
 - [ ] **Found in .NET 10.0.12, not ours:** `double.ToString("R")` (and plain `ToString()`)
       for 2^-25 and 2^-958 gives 16 digits that don't read back. They parse to the double
       below, because a power of two's lower neighbour is only half as far away. Python's
       repr and ApFloat both give 17. Pinned in `ShortestMatchesDotNetR`. Reporting it
       upstream (dotnet/runtime) would be Matthew's call.
+
+### Proposed (2026-09-30): not agreed yet, planning with Matthew
+- **Ziv engine** (internal): 10^n as a certified interval, squared with directed rounding
+  (round down for the low end, up for the high), at p + 64 bits. If both ends round the same
+  way, that's the answer; if not, double the precision and go again, ending at exact.
+  Makes 1e1000000 milliseconds, not minutes, for parse and for `ToString`, and it is the
+  retry loop transcendentals will need anyway.
+- **Resumable jobs**: `var job = ApFloat.StartParse(text, p); while (!job.Complete)
+  job.Continue(budget); x = job.Result;` with progress, cancellation, and perhaps
+  checkpoints to disk. For whatever is still long: exact fallbacks, huge outputs, and later
+  million-digit constants.
+- Candidates: IEEE status flags (inexact, overflow, underflow, invalid, divide-by-zero);
+  `Parse` into an `IeeeFormat` (bounded range, so bounded cost); Karatsuba and a dedicated
+  squaring for the exact routes.
 
 ### Later
 - [ ] `FusedMultiplyAdd` (exact a×b + c, round once — nearly free here), `Sqrt`

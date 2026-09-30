@@ -496,6 +496,39 @@ public class ApFloatTextTests
     public void ParseRejects(string? text) =>
         Assert.False(ApFloat.TryParse(text, 53, RoundingMode.ToNearestEven, Inv, out _));
 
+    [Theory]
+    [InlineData("1e100001")]
+    [InlineData("-1e-100001")]
+    [InlineData("0.001e100004")]                    // 1 × 10^100001, once the point moves to the end
+    [InlineData("1e99999999999999999999")]          // past a long
+    [InlineData("0x1p99999999999999999999")]
+    public void HugeExponentsAreRefused(string text)
+    {
+        // Refused before any arithmetic: exact parsing would build 5^100001 first (seconds,
+        // and growing with the square of the exponent).
+        var error = Assert.Throws<OverflowException>(() => ApFloat.Parse(text, 53, RoundingMode.ToNearestEven, Inv));
+        Assert.Contains("too large", error.Message);
+        Assert.False(ApFloat.TryParse(text, 53, RoundingMode.ToNearestEven, Inv, out _));
+    }
+
+    [Fact]
+    public void AroundTheCap()
+    {
+        Assert.Equal(100_000, ApFloat.MaxDecimalExponent);
+        Assert.Equal("1.000E+5000", ApFloat.Parse("1e5000", 53, RoundingMode.ToNearestEven, Inv).ToString("E3", Inv));
+
+        // A zero needs no power of five, so its exponent doesn't matter.
+        AssertSame(ApFloat.Zero, ApFloat.Parse("0e1000000000", 53, RoundingMode.ToNearestEven, Inv));
+        AssertSame(ApFloat.NegativeZero, ApFloat.Parse("-0.000e-999999999", 53, RoundingMode.ToNearestEven, Inv));
+
+        // Hex needs none either: any exponent that fits a long, instantly.
+        Assert.Equal("0x1p+3321929", ApFloat.Parse("0x1p+3321929", 53, RoundingMode.ToNearestEven, Inv).ToString("a", Inv));
+
+        // Malformed is still a format error, not an overflow.
+        Assert.Throws<FormatException>(() => ApFloat.Parse("1e1.5", 53, RoundingMode.ToNearestEven, Inv));
+        Assert.Throws<FormatException>(() => ApFloat.Parse("1e", 53, RoundingMode.ToNearestEven, Inv));
+    }
+
     [Fact]
     public void ParseRoundsInEveryMode()
     {
