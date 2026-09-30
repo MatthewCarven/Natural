@@ -305,3 +305,26 @@ are unaffected. Formatting isn't capped. Tests 327 → 333. Mutation check: 4 of
 
 Matthew then asked for an uncapped "reference mode": iterative, resumable, with a
 "complete?" flag. The plan in progress is in TODO under "Proposed".
+
+## 2026-09-30 — Reference mode planned (sessions 4–6)
+
+Matthew wants an uncapped "reference mode" that iterates, reports "complete?", and can be
+resubmitted to continue. Agreed, with his four decisions recorded in TODO ("Reference mode:
+the plan"):
+1. **Certified intervals** (Ziv's strategy) as the engine: bound 5^n from below and above
+   with directed rounding, round both ends, and accept when they agree; otherwise double
+   the working precision, ending at exact.
+2. **Both budgets**: wall-clock time and work units, with work units underneath.
+3. **Jobs in memory**: the caller holds the job and nothing is dropped while it lives.
+   Disk-backed resubmission was floated as a maybe-later.
+4. **The cap stays the default**; the reference mode is opt-in and uncapped.
+
+Session 4 (the engine) has a full brief in TODO, written for a fresh chat: the baseline
+timings to beat, where it plugs in (`FromDecimal`, `ScaledToInteger`, `PowerOfFive`), the
+sign and tie pitfalls, and the tests. The tests include reference values for huge
+exponents computed offline in Python, and constructed near-midpoint inputs that force
+extra rounds. Session 5 is the resumable job API; session 6 is optional extras (status
+flags, parse into a format, Karatsuba).
+
+Matthew is archiving this chat and starting fresh next time. He expects to be offline from
+about 1 October to 8 or 9 October, with a few more sessions before then.

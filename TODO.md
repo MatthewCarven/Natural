@@ -96,34 +96,105 @@ each number shows its size without doing any maths, and the patterns jump out.
       `TryParse` returns false. Measured: 1e10000 parses in 0.1 s and 1e100000 in 5 s; the
       cost grows with the square of the exponent. Zeros, and hex/binary text, have no limit.
       **Not capped: formatting.** `ToString()` of 1e100000 takes 15 s by the same route.
-- [ ] **A reference mode with no cap**: iterative and resumable, returning a "complete?"
-      flag. Matthew asked for it 2026-09-30. Planning with him; see "Proposed" below.
+- [ ] **A reference mode with no cap**: agreed 2026-09-30, planned below as sessions 4–6.
 
-- [ ] **Found in .NET 10.0.12, not ours:** `double.ToString("R")` (and plain `ToString()`)
-      for 2^-25 and 2^-958 gives 16 digits that don't read back. They parse to the double
-      below, because a power of two's lower neighbour is only half as far away. Python's
-      repr and ApFloat both give 17. Pinned in `ShortestMatchesDotNetR`. Reporting it
-      upstream (dotnet/runtime) would be Matthew's call.
+## Reference mode: the plan (agreed with Matthew 2026-09-30)
 
-### Proposed (2026-09-30): not agreed yet, planning with Matthew
-- **Ziv engine** (internal): 10^n as a certified interval, squared with directed rounding
-  (round down for the low end, up for the high), at p + 64 bits. If both ends round the same
-  way, that's the answer; if not, double the precision and go again, ending at exact.
-  Makes 1e1000000 milliseconds, not minutes, for parse and for `ToString`, and it is the
-  retry loop transcendentals will need anyway.
-- **Resumable jobs**: `var job = ApFloat.StartParse(text, p); while (!job.Complete)
-  job.Continue(budget); x = job.Result;` with progress, cancellation, and perhaps
-  checkpoints to disk. For whatever is still long: exact fallbacks, huge outputs, and later
-  million-digit constants.
-- Candidates: IEEE status flags (inexact, overflow, underflow, invalid, divide-by-zero);
-  `Parse` into an `IeeeFormat` (bounded range, so bounded cost); Karatsuba and a dedicated
-  squaring for the exact routes.
+**Decisions (Matthew, 2026-09-30):**
+1. The engine is **certified intervals** (Ziv's strategy): compute the power of ten well
+   enough, *provably*, and fall back to exact only when the rounding can't be settled.
+2. Job budgets: **both** wall-clock time and work units, with work units underneath
+   (deterministic; this machine runs at two speeds).
+3. Jobs live **in memory**. The caller holds the job, like a stream or a message queue that
+   mustn't drop messages. Disk-backed resubmission (checkpoints) is a possible later add-on
+   that he floated; not agreed yet.
+4. The default `Parse` **keeps the cap** (`MaxDecimalExponent` = 100,000) as the sensible
+   default. The reference mode is **opt-in** and uncapped.
 
-### Later
+Order: session 4 (engine), then 5 (jobs), then 6 (optional extras).
+
+### Session 4 — the certified interval engine (brief for a fresh chat)
+Goal: parsing "1e10000000" and printing 1e100000 take milliseconds, not minutes, with the
+answer proven correctly rounded. Exact stays as the fallback.
+
+Baseline to beat (Release, this machine, 2026-09-30, at 53 bits):
+| input      | Parse   | ToString() |
+|------------|---------|------------|
+| 1e10000    | 0.095 s | 0.135 s    |
+| 1e30000    | 0.48 s  | 1.46 s     |
+| 1e100000   | 5.0 s   | 15.0 s     |
+
+The idea: 10^n = 5^n × 2^n, and only 5^n is expensive. So compute bounds lo <= 5^n <= hi
+by square-and-multiply with `Multiply(..., workingBits, TowardNegative)` for lo and
+`TowardPositive` for hi. Directed rounding makes the bounds rigorous, with no error
+analysis. Build the value's interval from them (rounded outward), then round both ends
+to the target (precision and mode, or an IeeeFormat). If they agree, it's certified.
+If not, double `workingBits` and go again. Once `workingBits` reaches 5^|n|'s bit length
+the bounds are exact, which is the fallback. So it always ends, and always correctly.
+
+Where it plugs in (all in `src/Natural/ApFloat.Text.cs`):
+- `FromDecimal(negative, q, s, precision, mode)`: the parse core, also used by `R`'s
+  read-back check.
+- `ScaledToInteger(t, mode)`: the output core, |v| × 10^t rounded to an integer. There
+  the certified question is "do both ends round to the same integer?"
+- `DecimalExponent()` calls `ScaledToInteger` with `TowardZero`.
+- `PowerOfFive(n)`: cached below 5^4096. **Below the cache, keep the exact route** (it's
+  instant); use intervals only above it.
+- The cap: default `Parse` checks it before any work, as now. The reference mode (session
+  5's opt-in entry point) skips it.
+
+Things to get right:
+- Signs: bound magnitudes, then round the signed endpoints in the caller's mode.
+  `TowardPositive` on a negative value rounds its magnitude down.
+- Ties and exact values never certify from an interval (the ends straddle or touch a
+  midpoint), so they reach the fallback. Small |n| is exact anyway. For large |n| a tie
+  needs D to be a multiple of 5^|n|, a digit string of about 0.7·|n| digits, so the
+  fallback's cost is proportional to the input.
+- Start at p + 64 working bits; cap the number of doublings as a guard against an
+  infinite loop, which the tests should never hit.
+- Keep the one-rounding-point rule: the final rounding goes through `RoundExact` /
+  `RoundToFormat`.
+
+Tests:
+- Everything existing stays green (it mostly runs below the cache, on the exact route).
+- For |n| between 4096 and about 30,000, sampled: the interval route equals the exact route.
+  Add an internal switch to force either one.
+- Huge n (1e10000000, 1e-10000000, a few digit strings): reference results computed
+  **offline in Python** (integers only; 10**n for n = 10^7 takes seconds there) and pinned
+  as hex floats in the tests, since the exact route can't reach them.
+- Hard cases: take a p-bit midpoint, write out its exact decimal expansion (it's finite),
+  cut it off after many digits. That decimal sits within a hair of the midpoint and forces
+  extra rounds. Check it against the exact route, and count rounds through an internal hook.
+- Timing: the table above, re-measured afterwards (not asserted in tests: two speeds).
+- Mutation check with a subprocess timeout under the tool's cap (see the notebook): swap
+  lo/hi rounding; drop the outward rounding of D × bound; certify from one end only; skip
+  the doubling (should hang, then be caught by the timeout).
+
+### Session 5 — resumable jobs (the reference mode)
+- Sketch: `var job = ApFloat.StartParse(text, precision, mode, provider);`
+  `while (!job.Complete) job.Continue(TimeSpan.FromSeconds(1));` or
+  `job.Continue(workUnits: 1_000_000)`; then `job.Result`. Also `job.Progress` (0..1),
+  and the round count and final interval as a certificate. Cancelling is just not calling
+  `Continue` (maybe a `CancellationToken` too).
+- A work unit is one inner-loop step (a shift-and-add iteration, a division step), the same
+  on any machine. Time budgets are layered on top.
+- Resumable pieces: the engine's rounds, plus the exact fallback's multiply and divide
+  loops. Each is a bit index plus an array or two, so each can stop anywhere.
+- In memory only (decision 3). Opt-in reference entry point, uncapped (decision 4):
+  e.g. `ApFloat.ParseReference(...)` = StartParse, then run to completion.
+- `StartFormat` for printing huge values, and later for million-digit constants.
+
+### Session 6 — optional extras (pick any)
+- IEEE status flags: inexact, overflow, underflow, invalid, divide-by-zero.
+- `Parse` into an `IeeeFormat`: a bounded range means bounded cost, so 1e400 → ∞ in binary64 at once.
+- Karatsuba multiplication and a dedicated squaring, still bitwise, for the exact routes.
+- Streaming digits for huge output; disk-backed checkpoints (decision 3, if wanted).
+
+## ApFloat — later
 - [ ] `FusedMultiplyAdd` (exact a×b + c, round once — nearly free here), `Sqrt`
       (needs `ApInt` integer square root), `Floor`/`Ceiling`/`Truncate`/`Round`.
 - [ ] Transcendentals (exp, log, sin, π) — need error bounds (Ziv's retry strategy)
-      to stay correctly rounded. A project of its own.
+      to stay correctly rounded. A project of its own; session 4's engine is the start of it.
 - [ ] Generic math (`INumber<ApFloat>`, `IFloatingPointIeee754<ApFloat>`).
 
 ## Done
