@@ -319,34 +319,6 @@ public class ApFloatIeeeTests
     private static bool LandsSubnormal(float hardware, ApFloat unbounded) =>
         float.IsSubnormal(hardware) || (hardware == 0 && !unbounded.IsZero);
 
-    /// <summary>
-    /// Two random operands. Some are unrelated; some are close (cancellation in - , quotients
-    /// near 1); some have exponents chosen so the product or quotient lands among the
-    /// subnormals or just past the largest finite value.
-    /// </summary>
-    private static (ulong, ulong) RandomPair(Random rng, int w, int p)
-    {
-        ulong a = RandomIeeeBits(rng, w, p), b = RandomIeeeBits(rng, w, p);
-        ulong maxField = (1UL << w) - 1;
-        long bias = (long)(maxField / 2), emin = 1 - bias, emax = bias;
-        long fieldA = (long)((a >> (p - 1)) & maxField);
-        switch (rng.Next(4))
-        {
-            case 0:
-                // Close: a with some low bits changed, either sign.
-                b = a ^ RandomField(rng, rng.Next(1, p)) ^ ((ulong)rng.Next(2) << (w + p - 1));
-                break;
-            case 1:
-                // Product or quotient near the bottom or the top of the range.
-                long target = rng.Next(2) == 0 ? emin - rng.Next(0, p + 3) : emax + rng.Next(-1, 2);
-                long ea = Math.Max(fieldA, 1) - bias;
-                long eb = rng.Next(2) == 0 ? target - ea : ea - target;
-                b = WithField(b, w, p, (ulong)Math.Clamp(eb + bias, 1, (long)maxField - 1));
-                break;
-        }
-        return rng.Next(2) == 0 ? (a, b) : (b, a);
-    }
-
     private static void AssertSameBits(double expected, double actual, string context) =>
         Assert.True(double.IsNaN(expected) ? double.IsNaN(actual) : BitConverter.DoubleToInt64Bits(expected) == BitConverter.DoubleToInt64Bits(actual),
             $"{context}: expected {expected:R} ({BitConverter.DoubleToInt64Bits(expected):X16}), got {actual:R} ({BitConverter.DoubleToInt64Bits(actual):X16})");

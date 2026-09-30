@@ -133,21 +133,89 @@ public readonly partial struct ApFloat
         return Normalised(negative, significand, (long)field - format.Bias - fractionBits, precision);
     }
 
-    private uint[] EncodeIeee(IeeeFormat format, RoundingMode mode)
+    /// <summary>
+    /// This value rounded into an IEEE format, range and all: exactly the value
+    /// <see cref="ToIeeeBytes"/> would store. Near zero that's fewer bits than the precision
+    /// (the subnormals); past the top it's infinity, or the largest finite value when
+    /// rounding toward zero from that side.
+    /// </summary>
+    public ApFloat WithFormat(IeeeFormat format, RoundingMode mode = RoundingMode.ToNearestEven)
     {
         CheckFormat(format);
+        int precision = format.Precision;
+        return _kind switch
+        {
+            Kind.Finite => RoundToFormat(_negative, Mant, _exp, false, format, mode),
+            Kind.Zero => ZeroOf(_negative, precision),
+            Kind.Infinity => InfinityOf(_negative, precision),
+            _ => NaNOf(precision),
+        };
+    }
+
+    /// <summary>
+    /// Rounds ±mag × 2^exp (a little more, if sticky) once, into a format: to its precision
+    /// in the normal range, to fewer bits among the subnormals (RoundExact's minExp floor),
+    /// and past the largest finite value to infinity, or to the largest finite value when
+    /// rounding toward zero from that side. The result is exactly representable in the format.
+    /// Every route into a format comes through here: the encoder and the arithmetic.
+    /// </summary>
+    private static ApFloat RoundToFormat(bool negative, uint[] mag, long exp, bool sticky, IeeeFormat format, RoundingMode mode)
+    {
+        int precision = format.Precision;
+        long emax = format.MaxExponent;
+        long minExp = format.MinExponent - (precision - 1);     // the smallest subnormal is 2^minExp
+        long top = exp + Magnitude.BitLength(mag) - 1;
+
+        // Already past the largest binade: overflow, whichever way it rounds.
+        if (top <= emax)
+        {
+            // Under half the smallest subnormal, only the sign and the fact that it isn't zero
+            // can matter (as with Add's gap shortcut), so one bit there stands in for it and
+            // huge negative exponents stay cheap. (With sticky set the value is still under
+            // 2^(top+1), so the same holds.)
+            if (mag.Length != 0 && top < minExp - 1)
+            {
+                mag = [1];
+                exp = minExp - 2;
+                sticky = false;
+            }
+            ApFloat r = RoundExact(negative, mag, exp, sticky, precision, mode, minExp);
+            if (r.IsZero || r.Top <= emax) return r;          // in range, or underflowed to a signed zero
+        }
+
+        bool toInfinity = mode switch
+        {
+            RoundingMode.ToNearestEven => true,
+            RoundingMode.TowardZero => false,
+            RoundingMode.TowardPositive => !negative,
+            RoundingMode.TowardNegative => negative,
+            _ => throw new ArgumentOutOfRangeException(nameof(mode)),
+        };
+        if (toInfinity) return InfinityOf(negative, precision);
+
+        // The largest finite value: all p significand bits set, the top one at emax.
+        var ones = new uint[(precision + 31) >> 5];
+        SetLowBits(ones, precision);
+        return new ApFloat(Kind.Finite, negative, ones, emax - (precision - 1), precision);
+    }
+
+    /// <summary>Round into the format, then lay the (now exact) value out as bits.</summary>
+    private uint[] EncodeIeee(IeeeFormat format, RoundingMode mode) => PackIeee(WithFormat(format, mode), format);
+
+    /// <summary>The bit pattern of a value the format holds exactly.</summary>
+    private static uint[] PackIeee(ApFloat r, IeeeFormat format)
+    {
         int w = format.ExponentBits, fractionBits = format.Precision - 1;
         ulong maxField = LowBits(w);
-        long emax = format.MaxExponent, emin = format.MinExponent;
-        long minExp = emin - fractionBits;               // the smallest subnormal is 2^minExp
+        long minExp = format.MinExponent - fractionBits;
 
         var pattern = new uint[(format.Width + 31) >> 5];
-        if (_negative) SetBit(pattern, format.Width - 1); // never set for NaN
-        switch (_kind)
+        if (r._negative) SetBit(pattern, format.Width - 1);   // never set for NaN
+        switch (r._kind)
         {
             case Kind.NaN:
                 PutBits(pattern, fractionBits, maxField, w);
-                SetBit(pattern, fractionBits - 1);        // quiet
+                SetBit(pattern, fractionBits - 1);            // quiet
                 return pattern;
             case Kind.Infinity:
                 PutBits(pattern, fractionBits, maxField, w);
@@ -156,45 +224,8 @@ public readonly partial struct ApFloat
                 return pattern;
         }
 
-        // Already past the largest binade: overflow, whichever way it rounds.
-        bool overflow = Top > emax;
-        ApFloat r = default;
-        if (!overflow)
-        {
-            // Under half the smallest subnormal, only the sign and the fact that it isn't zero
-            // can matter (as with Add's gap shortcut), so one bit there stands in for it and
-            // huge negative exponents stay cheap.
-            uint[] mant = Mant;
-            long exp = _exp;
-            if (Top < minExp - 1)
-            {
-                mant = [1];
-                exp = minExp - 2;
-            }
-            r = RoundExact(_negative, mant, exp, false, format.Precision, mode, minExp);
-            if (r.IsZero) return pattern;                 // underflowed to a signed zero
-            overflow = r.Top > emax;                      // or rounded up past the largest finite value
-        }
-
-        if (overflow)
-        {
-            // Infinity, except rounding toward zero from this side, which stops at the largest
-            // finite value: exponent field all ones but the last bit, fraction all ones.
-            bool toInfinity = mode switch
-            {
-                RoundingMode.ToNearestEven => true,
-                RoundingMode.TowardZero => false,
-                RoundingMode.TowardPositive => !_negative,
-                RoundingMode.TowardNegative => _negative,
-                _ => throw new ArgumentOutOfRangeException(nameof(mode)),
-            };
-            PutBits(pattern, fractionBits, toInfinity ? maxField : maxField ^ 1, w);
-            if (!toInfinity) SetLowBits(pattern, fractionBits);
-            return pattern;
-        }
-
         long top = r.Top;
-        if (top < emin)
+        if (top < format.MinExponent)
         {
             // Subnormal: field 0, and the bits sit at their place values above 2^minExp.
             OrInto(pattern, Magnitude.ShiftLeft(r.Mant, r._exp - minExp));

@@ -21,7 +21,9 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   binary) and format (decimal via double dabble, eight BCD digits per `uint`).
 - `src/Natural/ApFloat.cs` — IEEE-style arbitrary-precision float: ±m × 2^e, m odd,
   `long` exponent, precision per value. All rounding goes through `RoundExact`
-  (compute exact, round once). In progress — see TODO for the plan.
+  (compute exact, round once). Each operation takes a precision (unbounded exponent)
+  or an `IeeeFormat` (rounded once into that format's range too, via `RoundToFormat`,
+  which the byte encoder also uses). The operators use the precision form.
 - `src/Natural/IeeeFormat.cs` — an IEEE binary format as (exponent bits, precision).
   `IeeeFormat.Binary(k)` is binary{k} per IEEE 754-2008 §3.6. Its width formula is
   done in integers, from k^8's bit length.

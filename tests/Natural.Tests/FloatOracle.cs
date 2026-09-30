@@ -82,7 +82,7 @@ internal static class FloatOracle
         if (x.IsInfinity) return sign | (maxField << f);
         if (x.IsZero) return sign;
 
-        long bias = (1L << (w - 1)) - 1, emin = 1 - bias, emax = bias;
+        long bias = (1L << (w - 1)) - 1, emin = 1 - bias;
 
         // Rounding commutes with scaling by 2^e, so round the significand alone, with the
         // subnormal floor moved to match. The numbers stay small however big the exponent
@@ -90,22 +90,43 @@ internal static class FloatOracle
         BigInteger m = Oracle.ToBig(x.Significand);
         long e = x.Exponent;
         Rounded r = Round(x.IsNegative ? -m : m, BigInteger.One, p, mode, emin - f - e);
-        if (r.N.IsZero) return sign;
-        long exponent = r.E + e;
+        return Place(x.IsNegative, r.N, r.E + e, w, p, mode);
+    }
 
-        long top = (long)r.N.GetBitLength() - 1 + exponent;
+    /// <summary>
+    /// The pattern for the exact value num / den (sign on num) rounded once into the format:
+    /// what arithmetic in the format must produce. An exact zero takes <paramref name="negativeZero"/>.
+    /// </summary>
+    public static BigInteger EncodeRational(BigInteger num, BigInteger den, bool negativeZero, int w, int p, RoundingMode mode)
+    {
+        if (num.IsZero) return negativeZero ? BigInteger.One << (w + p - 1) : BigInteger.Zero;
+        long bias = (1L << (w - 1)) - 1;
+        Rounded r = Round(num, den, p, mode, 1 - bias - (p - 1));
+        return Place(num.Sign < 0, r.N, r.E, w, p, mode);
+    }
+
+    /// <summary>Lays out a rounded ±n × 2^exponent: underflowed zero, overflow by mode, subnormal or normal.</summary>
+    private static BigInteger Place(bool negative, BigInteger n, long exponent, int w, int p, RoundingMode mode)
+    {
+        int f = p - 1;
+        BigInteger maxField = (BigInteger.One << w) - 1;
+        BigInteger sign = negative ? BigInteger.One << (w + f) : BigInteger.Zero;
+        long bias = (1L << (w - 1)) - 1, emin = 1 - bias, emax = bias;
+        if (n.IsZero) return sign;
+
+        long top = (long)n.GetBitLength() - 1 + exponent;
         if (top > emax)
         {
             bool infinite = mode == RoundingMode.ToNearestEven
-                || (mode == RoundingMode.TowardPositive && !x.IsNegative)
-                || (mode == RoundingMode.TowardNegative && x.IsNegative);
+                || (mode == RoundingMode.TowardPositive && !negative)
+                || (mode == RoundingMode.TowardNegative && negative);
             return infinite ? sign | (maxField << f) : sign | ((maxField - 1) << f) | ((BigInteger.One << f) - 1);
         }
-        if (top < emin) return sign | r.N;          // subnormal: the exponent is emin - f already
+        if (top < emin) return sign | n;          // subnormal: the exponent is emin - f already
 
-        // Normal: N × 2^exponent as a p-bit integer times 2^(top - f); the field stores it minus 2^f.
+        // Normal: n × 2^exponent as a p-bit integer times 2^(top - f); the field stores it minus 2^f.
         long shift = exponent - (top - f);
-        BigInteger significand = shift >= 0 ? r.N << (int)shift : r.N >> (int)-shift;
+        BigInteger significand = shift >= 0 ? n << (int)shift : n >> (int)-shift;
         return sign | ((BigInteger)(top + bias) << f) | (significand - (BigInteger.One << f));
     }
 
@@ -346,6 +367,34 @@ internal static class FloatOracle
                 rng.NextBytes(bytes);
                 return new BigInteger(bytes, isUnsigned: true) & mask;
         }
+    }
+
+    /// <summary>
+    /// Two random operands. Some are unrelated; some are close (cancellation in - , quotients
+    /// near 1); some have exponents chosen so the product or quotient lands among the
+    /// subnormals or just past the largest finite value.
+    /// </summary>
+    public static (ulong, ulong) RandomPair(Random rng, int w, int p)
+    {
+        ulong a = RandomIeeeBits(rng, w, p), b = RandomIeeeBits(rng, w, p);
+        ulong maxField = (1UL << w) - 1;
+        long bias = (long)(maxField / 2), emin = 1 - bias, emax = bias;
+        long fieldA = (long)((a >> (p - 1)) & maxField);
+        switch (rng.Next(4))
+        {
+            case 0:
+                // Close: a with some low bits changed, either sign.
+                b = a ^ RandomField(rng, rng.Next(1, p)) ^ ((ulong)rng.Next(2) << (w + p - 1));
+                break;
+            case 1:
+                // Product or quotient near the bottom or the top of the range.
+                long target = rng.Next(2) == 0 ? emin - rng.Next(0, p + 3) : emax + rng.Next(-1, 2);
+                long ea = Math.Max(fieldA, 1) - bias;
+                long eb = rng.Next(2) == 0 ? target - ea : ea - target;
+                b = WithField(b, w, p, (ulong)Math.Clamp(eb + bias, 1, (long)maxField - 1));
+                break;
+        }
+        return rng.Next(2) == 0 ? (a, b) : (b, a);
     }
 
     /// <summary>A random <paramref name="bits"/>-bit field, biased toward runs and edges.</summary>

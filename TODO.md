@@ -12,19 +12,14 @@ cases; the big-exponent-gap shortcut in `Add`; IEEE comparisons; integer convers
 IEEE bytes in any `binary{k}` or custom format, either byte order; `Half`/`float`/`double`
 both ways; decimal, binary and hex text both ways, correctly rounded in every mode.
 
-### Open question for Matthew (from session 1)
-- [ ] **Double rounding at 53 bits in the subnormal range.** ApFloat's exponent is
-      unbounded, so `(double)(x * y)` for two converted doubles rounds twice when the
-      product lands where double would go subnormal: once to 53 bits, then again to the
-      subnormal grid. The hardware rounds once. Measured: about 1% of such products and
-      quotients differ in the last place (10,454 of 987,109 products). Rounding the exact
-      result once is always right (`Multiply(x, y, 106).ToDouble()`), and the tests do
-      that. Options: leave it, since it's documented on the type and inherent to an
-      unbounded exponent; or add arithmetic *in a format*, e.g.
-      `ApFloat.Multiply(x, y, IeeeFormat.Binary64)`, passing the format's `minExp` down to
-      `RoundExact`. That is a small change: the floor exists, and since session 2 so does
-      `IeeeFormat`. It would give exact IEEE semantics for any binary{k}, subnormals
-      included, in all four modes.
+### Arithmetic in a format (Matthew's call, 2026-09-30: done the same day)
+- [x] `Add`/`Subtract`/`Multiply`/`Divide(a, b, IeeeFormat format, mode)` round once
+      straight into the format, subnormals and overflow included; `x.WithFormat(format,
+      mode)` does the same for a single value. `ApFloat.Multiply(x, y, IeeeFormat.Binary64)`
+      is the hardware's `x * y`, bit for bit, everywhere. This answers session 1's question:
+      the 53-bit *operators* (unbounded exponent) still round twice among the subnormals
+      (about 1%), and that stays documented on the type. The session 1 probe re-run gives
+      0 of 1,188,696 differing, against 12,619 for the operators.
 
 ### Session 1 — prove the core, then Half / float / double (done 2026-09-30)
 - [x] **Reference oracle in the tests** (`FloatOracle.cs`): exact rationals rounded by

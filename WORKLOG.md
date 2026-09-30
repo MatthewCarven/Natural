@@ -252,3 +252,42 @@ kept bit (1 + 2^-12, and the tie 0x1.0018): red.
 
 Open, in TODO: parsing "1e1000000" is slow (the 5^1000000 multiply) rather than refused.
 Reporting the .NET bug upstream is Matthew's call.
+
+## 2026-09-30 — Arithmetic in a format
+
+Matthew's call on session 1's open question: add it, "Binary64 style". So each operation
+now comes two ways:
+
+- `Add(a, b, 53)`: a precision, with an unbounded exponent, as before.
+- `Add(a, b, IeeeFormat.Binary64)`: rounded once, straight into the format, with its
+  subnormals near zero and its overflow at the top (∞, or the largest finite value when
+  rounding toward zero from that side), in all four modes.
+- `x.WithFormat(format, mode)` does the same for a single value.
+
+How: a private `Target` (a precision, and optionally a format) goes down through one core
+per operation, and the last step is either `RoundExact` or the new `RoundToFormat`.
+`RoundToFormat` is `RoundExact` with the format's `minExp` floor, the stand-in for values
+under half the smallest subnormal, and overflow by mode. The byte encoder was refactored
+onto it: `EncodeIeee` = `WithFormat`, then an exact `PackIeee`. So the encoder and the
+arithmetic can't disagree about what a format holds. All 314 existing tests passed across
+the refactor.
+
+Evidence: binary64 and binary32 arithmetic is bit-identical to `double`/`float` over 30,000
+edge-crowded pairs each, **with nothing excused**. Every rounding mode is checked against
+the rational oracle, whose encoder now takes an exact rational. Three 6-bit formats are
+checked exhaustively: every finite pair × 4 ops × 4 modes. Operands from outside the
+format (wider, and past both ends of its range) are covered too. binary128 and binary1024
+have known cases. The session 1 probe (a million products landing subnormal) re-run:
+**0 of 1,188,696 differ in binary64**, against 12,619 for the 53-bit operators.
+
+**Mutation check**: 8 of 8 red. Two lessons from it:
+- **"0 + b skips the format"** was caught only by the operands-from-outside test, added
+  just before the run because in-format operands can never show it.
+- **"Overflow only checked before rounding"** was first caught by one test. The new
+  overflow test missed it, because it read the result through `(double)`, and converting
+  applies the overflow again, hiding a result that had wrongly stayed a finite 2^1024. The
+  tests now check that every in-format result is exactly in the format (no rounding mode
+  moves it), and 7 tests catch that mutation.
+
+The operators (`x * y`) keep the unbounded exponent, and the class doc says so and points
+to the format overloads.
