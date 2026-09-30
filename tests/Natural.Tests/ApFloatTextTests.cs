@@ -497,25 +497,29 @@ public class ApFloatTextTests
         Assert.False(ApFloat.TryParse(text, 53, RoundingMode.ToNearestEven, Inv, out _));
 
     [Theory]
-    [InlineData("1e100001")]
-    [InlineData("-1e-100001")]
-    [InlineData("0.001e100004")]                    // 1 × 10^100001, once the point moves to the end
-    [InlineData("1e99999999999999999999")]          // past a long
+    [InlineData("1e99999999999999999999")]          // the exponent itself is past a long
     [InlineData("0x1p99999999999999999999")]
-    public void HugeExponentsAreRefused(string text)
+    [InlineData("1e3000000000000000000")]           // fits a long, but the binary exponent wouldn't (3e18 · log2 10)
+    [InlineData("-1e-3000000000000000000")]
+    [InlineData("1e4000000000000000000")]
+    public void ExponentsPastALongAreRefused(string text)
     {
-        // Refused before any arithmetic: exact parsing would build 5^100001 first (seconds,
-        // and growing with the square of the exponent).
         var error = Assert.Throws<OverflowException>(() => ApFloat.Parse(text, 53, RoundingMode.ToNearestEven, Inv));
         Assert.Contains("too large", error.Message);
         Assert.False(ApFloat.TryParse(text, 53, RoundingMode.ToNearestEven, Inv, out _));
     }
 
     [Fact]
-    public void AroundTheCap()
+    public void ExponentExtremes()
     {
-        Assert.Equal(100_000, ApFloat.MaxDecimalExponent);
         Assert.Equal("1.000E+5000", ApFloat.Parse("1e5000", 53, RoundingMode.ToNearestEven, Inv).ToString("E3", Inv));
+
+        // No cap on decimal exponents (it went when the interval engine came in): where the old
+        // cap was, and far past it. 0.001e100004 is 1 × 10^100001 once the point moves to the end.
+        Assert.Equal("1E+100001", ApFloat.Parse("1e100001", 53, RoundingMode.ToNearestEven, Inv).ToString("R", Inv));
+        Assert.Equal("1E+100001", ApFloat.Parse("0.001e100004", 53, RoundingMode.ToNearestEven, Inv).ToString("R", Inv));
+        Assert.Equal("-1E-100001", ApFloat.Parse("-1e-100001", 53, RoundingMode.ToNearestEven, Inv).ToString("R", Inv));
+        Assert.Equal("2.5E+2000000000000000000", ApFloat.Parse("25e1999999999999999999", 53, RoundingMode.ToNearestEven, Inv).ToString("R", Inv));
 
         // A zero needs no power of five, so its exponent doesn't matter.
         AssertSame(ApFloat.Zero, ApFloat.Parse("0e1000000000", 53, RoundingMode.ToNearestEven, Inv));

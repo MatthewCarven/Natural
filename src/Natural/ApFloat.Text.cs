@@ -460,18 +460,6 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     // Parsing
     // ------------------------------------------------------------------
 
-    /// <summary>
-    /// The largest decimal exponent <see cref="Parse(string)"/> accepts, either way (the default,
-    /// agreed 2026-09-30). Decimal text means digits × 10^n with the point moved to the end of
-    /// the digits. Reading it exactly builds 5^|n| in full, at a cost that grows with the square
-    /// of n: 1e100000 took 5 s. Past 10^±4096 the certified interval engine does it instead, in
-    /// under a millisecond (0.2 ms for 1e100000), and uses the exact route only for a decimal on
-    /// a rounding boundary. Beyond this cap Parse throws <see cref="OverflowException"/> (TryParse
-    /// returns false). Hex and binary text have no limit ("0x1p+3321929" is instant), and a zero
-    /// parses whatever its exponent.
-    /// </summary>
-    public const int MaxDecimalExponent = 100_000;
-
     /// <summary>Parses at <see cref="DefaultPrecision"/>, rounding to nearest, in the current culture. See the full overload.</summary>
     public static ApFloat Parse(string s) => Parse(s, DefaultPrecision);
 
@@ -483,27 +471,20 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     /// Accepts an optional sign, then: decimal ("1.5", ".5", "1e-7", "1_000.25"); hexadecimal
     /// floating point ("0x1.8p+1", C's syntax); binary ("0b101.01p-3"); NaN; Infinity (or inf, ∞).
     /// Hex and binary use "." for the point; decimal uses the culture's separator.
+    ///
+    /// Any exponent is fine whose value's binary exponent fits a long (decimal ones up to about
+    /// ±2.7 × 10^18). Past 10^±4096 decimal text goes through the certified interval engine, so
+    /// "1e1000000000000000000" takes about 2 ms. The time follows the length of the text: a
+    /// 30,000-digit decimal takes most of a second. (There was a cap at ±100,000 until the
+    /// engine came in; Matthew dropped it on 2026-09-30.)
     /// </summary>
     /// <exception cref="FormatException">It isn't a number.</exception>
-    /// <exception cref="OverflowException">A decimal exponent past <see cref="MaxDecimalExponent"/>, or any exponent past a long.</exception>
+    /// <exception cref="OverflowException">The value's binary exponent wouldn't fit a long.</exception>
     public static ApFloat Parse(string s, int precision, RoundingMode mode = RoundingMode.ToNearestEven, IFormatProvider? provider = null) =>
-        ParseOrThrow(s, precision, mode, provider, capped: true);
-
-    /// <summary>
-    /// For tests, until session 5's opt-in reference mode: Parse with no cap on the decimal
-    /// exponent. Only an exponent past a long overflows.
-    /// </summary>
-    internal static ApFloat ParseUncapped(string s, int precision, RoundingMode mode = RoundingMode.ToNearestEven,
-                                          IFormatProvider? provider = null) =>
-        ParseOrThrow(s, precision, mode, provider, capped: false);
-
-    private static ApFloat ParseOrThrow(string s, int precision, RoundingMode mode, IFormatProvider? provider, bool capped) =>
-        ParseCore(s, precision, mode, provider, capped, out ApFloat result) switch
+        ParseCore(s, precision, mode, provider, out ApFloat result) switch
         {
             ParseOutcome.Parsed => result,
-            ParseOutcome.TooLarge => throw new OverflowException(capped
-                ? $"\"{s}\": the exponent is too large to read exactly (decimal exponents stop at ±{MaxDecimalExponent}; hex has no limit)."
-                : $"\"{s}\": the exponent is too large (the value's binary exponent must fit a long)."),
+            ParseOutcome.TooLarge => throw new OverflowException($"\"{s}\": the exponent is too large (the value's binary exponent must fit a long)."),
             _ => throw new FormatException($"Not a number: \"{s}\"."),
         };
 
@@ -514,12 +495,11 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         TryParse(s, DefaultPrecision, RoundingMode.ToNearestEven, provider, out result);
 
     public static bool TryParse([NotNullWhen(true)] string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result) =>
-        ParseCore(s, precision, mode, provider, capped: true, out result) == ParseOutcome.Parsed;
+        ParseCore(s, precision, mode, provider, out result) == ParseOutcome.Parsed;
 
     private enum ParseOutcome { Parsed, NotANumber, TooLarge }
 
-    private static ParseOutcome ParseCore(string? s, int precision, RoundingMode mode, IFormatProvider? provider, bool capped,
-                                          out ApFloat result)
+    private static ParseOutcome ParseCore(string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result)
     {
         CheckPrecision(precision);
         result = default;
@@ -558,11 +538,11 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
                 return ParsePowerOfTwoRadix(span[2..], 4, negative, precision, mode, out result);
             if (span.Length > 2 && span[0] == '0' && span[1] is 'b' or 'B')
                 return ParsePowerOfTwoRadix(span[2..], 1, negative, precision, mode, out result);
-            return ParseDecimal(span, negative, precision, mode, nfi, capped, out result);
+            return ParseDecimal(span, negative, precision, mode, nfi, out result);
         }
         catch (OverflowException)
         {
-            return ParseOutcome.TooLarge;   // an exponent past a long, once the point is moved
+            return ParseOutcome.TooLarge;   // an exponent past a long, or a value whose binary exponent would be
         }
     }
 
@@ -575,7 +555,7 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
 
     /// <summary>digits [separator digits] [e [sign] digits]: the exact rational digits × 10^exp, rounded once.</summary>
     private static ParseOutcome ParseDecimal(ReadOnlySpan<char> span, bool negative, int precision, RoundingMode mode,
-                                             NumberFormatInfo nfi, bool capped, out ApFloat result)
+                                             NumberFormatInfo nfi, out ApFloat result)
     {
         result = default;
         int e = span.IndexOfAny('e', 'E');
@@ -593,7 +573,6 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         string digits = string.Concat(whole, fraction);
         ApInt d = ApInt.Parse(digits.Length == 0 ? "0" : digits);
         long n = checked(exponent - (fraction.Length - fraction.Count('_')));
-        if (capped && !d.IsZero && Math.Abs(n) > MaxDecimalExponent) return ParseOutcome.TooLarge;   // before any arithmetic
         result = FromDecimal(negative, d.Limbs, n, precision, mode);
         return ParseOutcome.Parsed;
     }

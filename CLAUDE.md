@@ -42,8 +42,9 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   X × 10^n past the cache: bounds on 5^n by square-and-multiply with directed rounding, both
   ends rounded to the target, accepted when they agree; otherwise double the working bits,
   and hand over to the exact route once that's cheaper. Text's two cores (`FromDecimal`,
-  `ScaledToInteger`) go through it. Test hooks: `ForcedRoute`, `LastRounds`, `LastExact`
-  (thread-static), and `ParseUncapped` until session 5's public reference mode.
+  `ScaledToInteger`) go through it, so `Parse` has no cap on decimal exponents: it refuses only
+  a value whose binary exponent wouldn't fit a long. Test hooks: `ForcedRoute`, `LastRounds`,
+  `LastExact` (thread-static).
 - `tests/Natural.Tests` — xUnit. `Oracle.cs` converts to/from `BigInteger` through
   raw magnitude bytes, so arithmetic tests don't depend on the text code.
   `FloatOracle.cs` is ApFloat's reference: exact rationals rounded by long division

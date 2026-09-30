@@ -409,7 +409,7 @@ public class CertifiedTests
     [InlineData("9.99999999999999999999e-10000001", 256, RoundingMode.TowardNegative, "+0x849E0E980620FA32B9D892CE945F308A1145780200F354F27AF039E80F7F1DCDp-33219536", false)]
     public void ParseAgainstPython(string text, int precision, RoundingMode mode, string expected, bool exactToo)
     {
-        ApFloat x = ApFloat.ParseUncapped(text, precision, mode, Inv);
+        ApFloat x = ApFloat.Parse(text, precision, mode, Inv);
         AssertIs(expected, x, text);
         Assert.Equal(precision, x.Precision);
         Assert.False(ApFloat.LastExact);
@@ -499,7 +499,7 @@ public class CertifiedTests
     {
         // "0x..." is exact in hex; "<decimal> @53" is that decimal parsed at 53 bits.
         ApFloat x = value.EndsWith(" @53", StringComparison.Ordinal)
-            ? ApFloat.ParseUncapped(value[..^4], 53, RoundingMode.ToNearestEven, Inv)
+            ? ApFloat.Parse(value[..^4], 53, RoundingMode.ToNearestEven, Inv)
             : ApFloat.Parse(value, precision, RoundingMode.ToNearestEven, Inv);
         Assert.Equal(expected, x.ToString(format, Inv, mode));
         if (mode == RoundingMode.ToNearestEven && format == $"E{ApFloat.DecimalDigitsFor(precision) - 1}")
@@ -517,29 +517,19 @@ public class CertifiedTests
     public void HugeExponentsRoundTrip(string text)
     {
         // "R" gives the shortest text that reads back, and a short input is its own shortest.
-        ApFloat x = ApFloat.ParseUncapped(text, 53, RoundingMode.ToNearestEven, Inv);
+        ApFloat x = ApFloat.Parse(text, 53, RoundingMode.ToNearestEven, Inv);
         Assert.Equal(Canonical(text), Canonical(x.ToString("R", Inv)));
-        AssertSame(x, ApFloat.ParseUncapped(x.ToString(null, Inv), 53, RoundingMode.ToNearestEven, Inv));
+        AssertSame(x, ApFloat.Parse(x.ToString(null, Inv), 53, RoundingMode.ToNearestEven, Inv));
 
         // Rounded down and rounded up, they're neighbours, and the nearest is one of them. At 53
         // bits the step up from the smaller magnitude is 2^(its top bit - 52).
-        ApFloat down = ApFloat.ParseUncapped(text, 53, RoundingMode.TowardNegative, Inv);
-        ApFloat up = ApFloat.ParseUncapped(text, 53, RoundingMode.TowardPositive, Inv);
+        ApFloat down = ApFloat.Parse(text, 53, RoundingMode.TowardNegative, Inv);
+        ApFloat up = ApFloat.Parse(text, 53, RoundingMode.TowardPositive, Inv);
         Assert.True(down < up);
         Assert.True(x == down || x == up);
         ApFloat small = x.IsNegative ? up : down;
         ApFloat gap = ApFloat.Subtract(up, down, 53);
         Assert.Equal(1L, gap.Significand.BitLength);
         Assert.Equal(small.Exponent + small.Significand.BitLength - 53, gap.Exponent);
-    }
-
-    [Fact]
-    public void TheDefaultParseKeepsItsCap()
-    {
-        Assert.Throws<OverflowException>(() => ApFloat.Parse("1e100001", 53, RoundingMode.ToNearestEven, Inv));
-        Assert.Equal("1E+100001", ApFloat.ParseUncapped("1e100001", 53).ToString("R", Inv));
-        // The uncapped parse still stops where the binary exponent would pass a long.
-        Assert.Throws<OverflowException>(() => ApFloat.ParseUncapped("1e4000000000000000000", 53));
-        Assert.Throws<OverflowException>(() => ApFloat.ParseUncapped("1e99999999999999999999", 53));
     }
 }

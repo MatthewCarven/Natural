@@ -117,8 +117,9 @@ each number shows its size without doing any maths, and the patterns jump out.
       `TryParse` returns false. Measured: 1e10000 parses in 0.1 s and 1e100000 in 5 s; the
       cost grows with the square of the exponent. Zeros, and hex/binary text, have no limit.
       **Not capped: formatting.** `ToString()` of 1e100000 takes 15 s by the same route.
-- [ ] **A reference mode with no cap**: agreed 2026-09-30. Session 4 (the engine) is done;
-      session 5 (jobs) is next. Whether the default keeps its cap is open (below).
+      **The cap was dropped the same day, after session 4** (Matthew's call): see below.
+- [ ] **A reference mode**: agreed 2026-09-30. Session 4 (the engine) is done, and the default
+      `Parse` has no cap now. Session 5 (resumable jobs) is next.
 
 ## Reference mode: the plan (agreed with Matthew 2026-09-30)
 
@@ -130,9 +131,10 @@ each number shows its size without doing any maths, and the patterns jump out.
 3. Jobs live **in memory**. The caller holds the job, like a stream or a message queue that
    mustn't drop messages. Disk-backed resubmission (checkpoints) is a possible later add-on
    that he floated; not agreed yet.
-4. The default `Parse` **keeps the cap** (`MaxDecimalExponent` = 100,000) as the sensible
-   default. The reference mode is **opt-in** and uncapped. (Reopened after session 4, since
-   the reason for the cap has mostly gone: see "Open, from session 4".)
+4. ~~The default `Parse` keeps the cap (`MaxDecimalExponent` = 100,000); the reference mode is
+   opt-in and uncapped.~~ **Changed after session 4 (Matthew, 2026-09-30): the cap is gone.**
+   `Parse` takes any exponent whose value's binary exponent fits a long, so the reference
+   mode is about stepping and pausing long work, not unlocking exponents.
 
 Order: session 4 (engine), then 5 (jobs). Session 6's extras were split up on
 2026-09-30 and now sit in "Order of work" at the top.
@@ -152,14 +154,11 @@ Order: session 4 (engine), then 5 (jobs). Session 6's extras were split up on
       1 equivalent. Details in WORKLOG.
 
 ### Open, from session 4
-- [ ] **Matthew's call: does the default Parse still need its cap?** It was there because
+- [x] **The cap is dropped** (Matthew, 2026-09-30, asked with the timings). It was there because
       1e100000 took 5 s and grew with the square of the exponent. Now a short input takes
-      milliseconds whatever its exponent (up to about 10^(2.7·10^18), where the binary
-      exponent passes a long). What's left that's slow is long input: a 30,000-digit decimal
-      parses in 0.75 s, quadratic in its length, capped or not. The options: drop the cap
-      (only a binary exponent past a long is refused), keep ±100,000 (decision 4), or raise it.
-      The answer changes what session 5's opt-in entry point is for: unlocking exponents, or
-      only stepping long jobs.
+      milliseconds whatever its exponent. `MaxDecimalExponent` is gone, and `Parse` refuses only
+      a value whose binary exponent wouldn't fit a long (decimal exponents past about
+      ±2.7 × 10^18). What's left that's slow is long input, and that's session 5's.
 - [ ] Long digit strings both ways are quadratic in their length: ApInt's decimal digit loop
       when parsing (30,000 digits: 0.75 s), and double dabble when printing (`F0` of 1e30000:
       0.22 s). Session 5's jobs make them resumable; order item 7 (speed) would make them faster.
@@ -167,11 +166,12 @@ Order: session 4 (engine), then 5 (jobs). Session 6's extras were split up on
 ### Session 5 — resumable jobs (brief for a fresh chat)
 Goal: an opt-in reference mode whose work the caller holds, steps, pauses and resumes.
 `StartParse` / `StartFormat` return a job; `Continue(budget)` does up to that much work; then
-`Complete`, `Result`, `Progress` (0..1), and a certificate. It's uncapped (decision 4). The
-job machinery must be a general piece, not tied to parsing (Matthew's reuse aim below).
+`Complete`, `Result`, `Progress` (0..1), and a certificate. The default `Parse` has no cap
+any more (decision 4, changed), so jobs are for long work, not for big exponents. The job
+machinery must be a general piece, not tied to parsing (Matthew's reuse aim below).
 
 **Ask Matthew first** (one short question with a preview, recommendation first, as usual):
-the cap question under "Open, from session 4", and the API shape below. Then build.
+the API shape below. Then build.
 
 What actually takes time now (Release, measured 2026-09-30), so what a job must be able to
 pause:
@@ -202,14 +202,13 @@ Recommended design (a proposal to confirm, not settled):
   estimate from the current round.
 - **Certificate**: rounds taken, the final W, the two interval ends, and whether the exact
   route finished it.
-- **Entry points**: `ApFloat.StartParse(text, precision, mode, provider)`,
-  `ApFloat.ParseReference(...)` (start, then run to completion), and
-  `x.StartFormat(format, provider, mode)`. The internal `ParseUncapped` becomes
-  `ParseReference`.
+- **Entry points**: `ApFloat.StartParse(text, precision, mode, provider)` and
+  `x.StartFormat(format, provider, mode)`. `Parse` and `ToString` stay one-shot; ideally they
+  run the same steps to completion, so the two can't disagree.
 - Cancelling is just not calling `Continue` again. Maybe add a `CancellationToken` overload.
 
 **Proposed split** (it's big): **5a** is the generic `Job<T>`, the resumable decimal digit
-loop, and `StartParse`/`ParseReference`, with the engine's rounds as whole steps. **5b** is
+loop, and `StartParse`, with the engine's rounds as whole steps. **5b** is
 the resumable exact route (multiply and divide loops, 5^n), `StartFormat` with resumable
 double dabble, and progress estimates for the engine.
 

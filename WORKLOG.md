@@ -411,3 +411,18 @@ now that 1e100000 takes 0.2 ms, is a question for Matthew (TODO).
 The bench was a .NET 10 file-based app: `dotnet run -c Release bench.cs` with
 `#:project <csproj>` at the top, reaching the internals by reflection. It needs no project
 file of its own.
+
+## 2026-09-30 — The parse cap dropped
+
+Matthew's call, asked with the session 4 timings: the cap's reason (5 s for 1e100000, growing
+with the square of the exponent) had gone, since a short input now takes milliseconds whatever
+its exponent. `MaxDecimalExponent` and the internal `ParseUncapped` are gone. `Parse` now
+refuses only a value whose binary exponent wouldn't fit a long, which means decimal exponents
+past about ±2.7 × 10^18 (the `checked` exponent sums in the engine throw, and `ParseCore` turns
+that into `OverflowException`). "25e1999999999999999999" parses and prints back.
+`HugeExponentsAreRefused` became `ExponentsPastALongAreRefused` (with the 3e18 and 4e18 edge
+rows), and `AroundTheCap` became `ExponentExtremes`. Tests 484 → 483, after dropping a
+duplicate. Breaking it on purpose: putting the cap back goes red in 58 tests. Making both
+exponent sums unchecked goes red in the two 3e18 rows. Making only one unchecked stays green,
+but that one is equivalent, since the other sum overflows on the same inputs.
+Session 5's brief now says what the jobs are for: stepping long work, not unlocking exponents.
