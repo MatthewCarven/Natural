@@ -1,8 +1,8 @@
 # TODO
 
 ## Order of work (agreed with Matthew 2026-09-30)
-1. **Session 4**: the certified interval engine (brief below).
-2. **Session 5**: resumable jobs, built on 4.
+1. ~~**Session 4**: the certified interval engine.~~ Done 2026-09-30.
+2. **Session 5**: resumable jobs, built on 4. **Next**; brief below, proposed as 5a and 5b.
 3. **The IEEE operations ApFloat still lacks**: FMA, Floor/Ceiling/Truncate/Round, IEEE
    remainder, and `ApInt` integer square root, then `ApFloat.Sqrt`. The **IEEE status
    flags** go in first, in the same session, so each new operation reports them from day one.
@@ -117,7 +117,8 @@ each number shows its size without doing any maths, and the patterns jump out.
       `TryParse` returns false. Measured: 1e10000 parses in 0.1 s and 1e100000 in 5 s; the
       cost grows with the square of the exponent. Zeros, and hex/binary text, have no limit.
       **Not capped: formatting.** `ToString()` of 1e100000 takes 15 s by the same route.
-- [ ] **A reference mode with no cap**: agreed 2026-09-30, planned below as sessions 4–6.
+- [ ] **A reference mode with no cap**: agreed 2026-09-30. Session 4 (the engine) is done;
+      session 5 (jobs) is next. Whether the default keeps its cap is open (below).
 
 ## Reference mode: the plan (agreed with Matthew 2026-09-30)
 
@@ -130,86 +131,114 @@ each number shows its size without doing any maths, and the patterns jump out.
    mustn't drop messages. Disk-backed resubmission (checkpoints) is a possible later add-on
    that he floated; not agreed yet.
 4. The default `Parse` **keeps the cap** (`MaxDecimalExponent` = 100,000) as the sensible
-   default. The reference mode is **opt-in** and uncapped.
+   default. The reference mode is **opt-in** and uncapped. (Reopened after session 4, since
+   the reason for the cap has mostly gone: see "Open, from session 4".)
 
 Order: session 4 (engine), then 5 (jobs). Session 6's extras were split up on
 2026-09-30 and now sit in "Order of work" at the top.
 
-### Session 4 — the certified interval engine (brief for a fresh chat)
-Goal: parsing "1e10000000" and printing 1e100000 take milliseconds, not minutes, with the
-answer proven correctly rounded. Exact stays as the fallback.
+### Session 4 — the certified interval engine (done 2026-09-30)
+- [x] `ApFloat.Certified.cs`: bounds on 5^n by square-and-multiply with directed rounding,
+      X × or ÷ the bounds rounded outward, both ends rounded to the target, accepted when
+      they agree. Otherwise W doubles, and the exact route finishes once W reaches an eighth
+      of 5^n's bit length (cheaper by then). Below the cache (|n| < 4096) the exact route runs,
+      as before. `FromDecimal` and `ScaledToInteger` go through it.
+- [x] The first round works at p + 64 + bitlength(n) bits: squaring doubles a relative
+      error, so the bounds are about n·2^(2−W) apart (the brief said log n; a test caught it).
+- [x] Parse of 1e100000 went from 5.1 s to 0.22 ms and its `ToString()` from 15.2 s to
+      0.47 ms. 1e10000000 parses in 0.36 ms and 1e(10^18) in 1.8 ms. Table in WORKLOG.
+- [x] 151 new tests (333 → 484), with values for 10^±(10^7) from exact Python integers
+      (`tests/reference/certified_reference.py`). Mutation check: 13 mutations, 12 red,
+      1 equivalent. Details in WORKLOG.
 
-Baseline to beat (Release, this machine, 2026-09-30, at 53 bits):
-| input      | Parse   | ToString() |
-|------------|---------|------------|
-| 1e10000    | 0.095 s | 0.135 s    |
-| 1e30000    | 0.48 s  | 1.46 s     |
-| 1e100000   | 5.0 s   | 15.0 s     |
+### Open, from session 4
+- [ ] **Matthew's call: does the default Parse still need its cap?** It was there because
+      1e100000 took 5 s and grew with the square of the exponent. Now a short input takes
+      milliseconds whatever its exponent (up to about 10^(2.7·10^18), where the binary
+      exponent passes a long). What's left that's slow is long input: a 30,000-digit decimal
+      parses in 0.75 s, quadratic in its length, capped or not. The options: drop the cap
+      (only a binary exponent past a long is refused), keep ±100,000 (decision 4), or raise it.
+      The answer changes what session 5's opt-in entry point is for: unlocking exponents, or
+      only stepping long jobs.
+- [ ] Long digit strings both ways are quadratic in their length: ApInt's decimal digit loop
+      when parsing (30,000 digits: 0.75 s), and double dabble when printing (`F0` of 1e30000:
+      0.22 s). Session 5's jobs make them resumable; order item 7 (speed) would make them faster.
 
-The idea: 10^n = 5^n × 2^n, and only 5^n is expensive. So compute bounds lo <= 5^n <= hi
-by square-and-multiply with `Multiply(..., workingBits, TowardNegative)` for lo and
-`TowardPositive` for hi. Directed rounding makes the bounds rigorous, with no error
-analysis. Build the value's interval from them (rounded outward), then round both ends
-to the target (precision and mode, or an IeeeFormat). If they agree, it's certified.
-If not, double `workingBits` and go again. Once `workingBits` reaches 5^|n|'s bit length
-the bounds are exact, which is the fallback. So it always ends, and always correctly.
+### Session 5 — resumable jobs (brief for a fresh chat)
+Goal: an opt-in reference mode whose work the caller holds, steps, pauses and resumes.
+`StartParse` / `StartFormat` return a job; `Continue(budget)` does up to that much work; then
+`Complete`, `Result`, `Progress` (0..1), and a certificate. It's uncapped (decision 4). The
+job machinery must be a general piece, not tied to parsing (Matthew's reuse aim below).
 
-Where it plugs in (all in `src/Natural/ApFloat.Text.cs`):
-- `FromDecimal(negative, q, s, precision, mode)`: the parse core, also used by `R`'s
-  read-back check.
-- `ScaledToInteger(t, mode)`: the output core, |v| × 10^t rounded to an integer. There
-  the certified question is "do both ends round to the same integer?"
-- `DecimalExponent()` calls `ScaledToInteger` with `TowardZero`.
-- `PowerOfFive(n)`: cached below 5^4096. **Below the cache, keep the exact route** (it's
-  instant); use intervals only above it.
-- The cap: default `Parse` checks it before any work, as now. The reference mode (session
-  5's opt-in entry point) skips it.
+**Ask Matthew first** (one short question with a preview, recommendation first, as usual):
+the cap question under "Open, from session 4", and the API shape below. Then build.
+
+What actually takes time now (Release, measured 2026-09-30), so what a job must be able to
+pause:
+- Long digit strings in: ApInt's decimal loop (x·10 + d per digit) is quadratic. 30,000 digits
+  take 0.75 s, so a million would take about 15 minutes.
+- Long digit strings out: double dabble, one pass per bit. `F0` of 1e30000 takes 0.22 s.
+- Ties and exact values with a huge exponent: the exact route (5^n in full, then a multiply
+  or a restoring division). These only come from long inputs.
+- A long input a hair from a boundary: engine rounds at W of about 3.3 bits per digit.
+Short inputs finish in milliseconds and don't need a job.
+
+Recommended design (a proposal to confirm, not settled):
+- **Iterators as the resumable form.** Write each long loop as a C# iterator that
+  `yield return`s the work it just did (`IEnumerable<long>`). The compiler keeps the loop's
+  state (the bit index, the arrays), so resumable code reads like the one-shot code. The job
+  driver pulls from the iterator until the budget is spent. Measure the overhead first. If it
+  costs the everyday path, keep the one-shot loops as they are and test the two against each
+  other.
+- **Work units**: one unit per limb-sized step (a FullAdd over one limb, or one division
+  step), counted where the loops yield, so it's identical on any machine. A time budget
+  checks a `Stopwatch` every few thousand units (decision 2: both, units underneath).
+- **Generic core** (Matthew's reuse aim): `Job<T>` with `Continue(long units)`,
+  `Continue(TimeSpan)`, `Complete`, `Result`, `Progress`, `WorkDone`, over any
+  `IEnumerable<long>` plus a result. Numbers are just its first user. In its own file, and
+  possibly a namespace (`Natural.Jobs`).
+- **Progress**: the digit loops and the exact route know their total work up front (from
+  lengths and bit lengths). The engine's rounds grow 4× each (W doubles, cost ~W²), so
+  estimate from the current round.
+- **Certificate**: rounds taken, the final W, the two interval ends, and whether the exact
+  route finished it.
+- **Entry points**: `ApFloat.StartParse(text, precision, mode, provider)`,
+  `ApFloat.ParseReference(...)` (start, then run to completion), and
+  `x.StartFormat(format, provider, mode)`. The internal `ParseUncapped` becomes
+  `ParseReference`.
+- Cancelling is just not calling `Continue` again. Maybe add a `CancellationToken` overload.
+
+**Proposed split** (it's big): **5a** is the generic `Job<T>`, the resumable decimal digit
+loop, and `StartParse`/`ParseReference`, with the engine's rounds as whole steps. **5b** is
+the resumable exact route (multiply and divide loops, 5^n), `StartFormat` with resumable
+double dabble, and progress estimates for the engine.
 
 Things to get right:
-- Signs: bound magnitudes, then round the signed endpoints in the caller's mode.
-  `TowardPositive` on a negative value rounds its magnitude down.
-- Ties and exact values never certify from an interval (the ends straddle or touch a
-  midpoint), so they reach the fallback. Small |n| is exact anyway. For large |n| a tie
-  needs D to be a multiple of 5^|n|, a digit string of about 0.7·|n| digits, so the
-  fallback's cost is proportional to the input.
-- Start at p + 64 working bits; cap the number of doublings as a guard against an
-  infinite loop, which the tests should never hit.
-- Keep the one-rounding-point rule: the final rounding goes through `RoundExact` /
-  `RoundToFormat`.
+- The thread-static test hooks (`LastRounds`, `LastExact`) mustn't carry a job's state: a job
+  may be continued on another thread. Keep a job's round count in the job.
+- A job's result must be bit-identical to the one-shot result. There's one rounding point
+  (`RoundExact` / `RoundToFormat`), and the job reaches it by the same route.
+- `Continue(n)` may overshoot n by at most one step. Document the step size.
+- Memory: a job holds its arrays for as long as the caller holds the job (decision 3: in
+  memory; disk checkpoints are not agreed).
 
 Tests:
-- Everything existing stays green (it mostly runs below the cache, on the exact route).
-- For |n| between 4096 and about 30,000, sampled: the interval route equals the exact route.
-  Add an internal switch to force either one.
-- Huge n (1e10000000, 1e-10000000, a few digit strings): reference results computed
-  **offline in Python** (integers only; 10**n for n = 10^7 takes seconds there) and pinned
-  as hex floats in the tests, since the exact route can't reach them.
-- Hard cases: take a p-bit midpoint, write out its exact decimal expansion (it's finite),
-  cut it off after many digits. That decimal sits within a hair of the midpoint and forces
-  extra rounds. Check it against the exact route, and count rounds through an internal hook.
-- Timing: the table above, re-measured afterwards (not asserted in tests: two speeds).
-- Mutation check with a subprocess timeout under the tool's cap (see the notebook): swap
-  lo/hi rounding; drop the outward rounding of D × bound; certify from one end only; skip
-  the doubling (should hang, then be caught by the timeout).
+- A job equals the one-shot `Parse`/`ToString` for random inputs in every mode, including when
+  stepped one unit at a time.
+- The budget is honoured (work done is at most budget + one step). `Progress` never goes down
+  and ends at 1. `Complete` is false until the result exists.
+- Long inputs (100,000 digits) stepped to completion, against the oracle.
+- The certificate's two ends bracket the exact value (use the rational oracle).
+- Time budgets roughly honoured, but not asserted tightly (this machine has two speeds).
+- Mutation plan: a resume that restarts a loop from 0; a `Continue` that ignores its budget;
+  `Complete` set one step early; a carry lost across a yield in a resumable multiply;
+  `Progress` computed from the wrong total.
 
-### Session 5 — resumable jobs (the reference mode)
-- Sketch: `var job = ApFloat.StartParse(text, precision, mode, provider);`
-  `while (!job.Complete) job.Continue(TimeSpan.FromSeconds(1));` or
-  `job.Continue(workUnits: 1_000_000)`; then `job.Result`. Also `job.Progress` (0..1),
-  and the round count and final interval as a certificate. Cancelling is just not calling
-  `Continue` (maybe a `CancellationToken` too).
-- A work unit is one inner-loop step (a shift-and-add iteration, a division step), the same
-  on any machine. Time budgets are layered on top.
-- Resumable pieces: the engine's rounds, plus the exact fallback's multiply and divide
-  loops. Each is a bit index plus an array or two, so each can stop anywhere.
-- In memory only (decision 3). Opt-in reference entry point, uncapped (decision 4):
-  e.g. `ApFloat.ParseReference(...)` = StartParse, then run to completion.
-- `StartFormat` for printing huge values, and later for million-digit constants.
-- **Build the job machinery to be reused** (Matthew, 2026-09-30): he expects this structure
-  to turn up in other projects "where we need bigger numbers to put a cap on possibilities"
-  and "must be able to iterate across them in a controlled and safe way". So the budget, the
-  work-unit count, `Continue`/`Complete`/`Progress` and the certificate should be a general
-  piece that a parse or a format plugs into, not something tied to parsing.
+Matthew, 2026-09-30, on reuse: he expects this structure to turn up in other projects "where
+we need bigger numbers to put a cap on possibilities" and "must be able to iterate across
+them in a controlled and safe way". So the budget, the work-unit count,
+`Continue`/`Complete`/`Progress` and the certificate belong in a general piece that a parse or
+a format plugs into.
 
 ### The rest (was session 6; see "Order of work" for where each now goes)
 - IEEE status flags: inexact, overflow, underflow, invalid, divide-by-zero. (Order item 3.)

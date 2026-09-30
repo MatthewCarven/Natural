@@ -328,3 +328,86 @@ flags, parse into a format, Karatsuba).
 
 Matthew is archiving this chat and starting fresh next time. He expects to be offline from
 about 1 October to 8 or 9 October, with a few more sessions before then.
+
+## 2026-09-30 — Order of work agreed
+
+Matthew agreed a nine-item order for everything left (now at the top of TODO): sessions 4
+and 5, then the IEEE operations ApFloat lacks (status flags first), parse into a format,
+`ApInt` bitwise, generic math, speed, transcendentals, `IFloatingPointIeee754`. Session 6's
+extras were split up into that list. He expects the job machinery (session 5) to be reused
+elsewhere, wherever big numbers put a cap on possibilities and have to be iterated across in
+a controlled, safe way. That's now a requirement in session 5's notes.
+
+## 2026-09-30 — Session 4: the certified interval engine
+
+Decimal text past the cache of powers of five (|n| >= 4096) no longer builds 5^|n|.
+`ApFloat.Certified.cs` bounds it instead. lo <= 5^n <= hi comes from square-and-multiply at
+W bits, rounding down for lo and up for hi. X is multiplied (or divided) by the bounds,
+rounded outward, and both ends are rounded to the target. If they agree, the result is
+certified. If not, W doubles, and once W reaches an eighth of 5^n's bit length the exact route
+finishes: it's cheaper by then, and it's always right. Both text cores go through it:
+`FromDecimal` (parsing, and R's read-back) and `ScaledToInteger` (every decimal output).
+
+**Speed** (Release, 53 bits, both routes interleaved in one process):
+
+| input      | Parse, exact | Parse, intervals | ToString(), exact | ToString(), intervals |
+|------------|--------------|------------------|-------------------|-----------------------|
+| 1e10000    | 76 ms        | 0.25 ms          | 129 ms            | 0.47 ms               |
+| 1e30000    | 476 ms       | 0.25 ms          | 1.47 s            | 0.45 ms               |
+| 1e100000   | 5.1 s        | 0.22 ms          | 15.2 s            | 0.47 ms               |
+| 1e1000000  |              | 0.28 ms          |                   | 0.61 ms               |
+| 1e10000000 |              | 0.36 ms          |                   | 0.78 ms               |
+| 1e10^18    |              | 1.8 ms           |                   | 4.3 ms                |
+
+At 256 bits the interval route takes 0.65–6.2 ms to parse and 2.6–24.5 ms to print. The exact
+column re-measures the TODO's baseline to within 20%.
+
+**Found: squaring doubles a relative error.** The bounds on 5^n end up about n·2^(2−W)
+apart, not log(n)·2^−W as the brief assumed. My own tightness test caught it (5^1000 at 24
+bits). The first round now works at p + 64 + bitlength(n) bits, so the margin stays 64 bits
+for any n. Without that, n = 10^18 would have left about 2.
+
+**Where the exact route still runs**: ties, and exact values in the directed modes, because
+the interval ends straddle the boundary they sit on. Past the cache these need long digit
+strings: q × 10^−n is a tie or exact only if q is a multiple of 5^n. A decimal a hair from a
+boundary takes extra rounds (W reaches about 3.3 bits per digit of input). So parsing now
+costs in proportion to the input's length, not its exponent. Short inputs take milliseconds
+right up to 10^(10^18). What's still slow is long digit strings, both ways, and that's ApInt's
+digit loop and double dabble, not the engine. A 30,000-digit decimal parses in 0.75 s, and
+`ToString("F0")` of 1e30000 takes 0.22 s (both quadratic).
+
+**Tests**: 333 → 484, all in `CertifiedTests`:
+- The bounds bracket 5^n and are as tight as the n·2^−W analysis says.
+- Forced intervals, even below the cache, against the rational oracle, for parsing and
+  formatting.
+- Past the cache: correct against the oracle, and certified without the fallback. The
+  routes agree with each other.
+- Decimals near a boundary, cut from exact midpoint expansions: two or more rounds, no fallback.
+- Ties and exact values: they reach the fallback.
+- Values a hair from a boundary where the bounds are exact (see below).
+- 64 parse and 64 format values at 10^±5000 and 10^±(10^7), computed in Python with exact
+  integers (`tests/reference/certified_reference.py`; 5**10**7 takes 4 s). The 10^±5000 rows
+  also go through the old exact route, which checks the script against code written before
+  the engine existed.
+- Round trips at 10^±(10^18).
+
+**Mutation check**: 13 mutations, 12 red, 1 equivalent. On the brief's four:
+- Swapping lo's rounding goes red in the bounds test only. It perturbs the multiplies, not
+  the squarings, so the error isn't amplified.
+- Dropping the outward rounding of X × bound **survived** at first. Past the cache the bounds
+  on 5^n are thousands of ulps apart, which hides it. A new test forces intervals where the
+  bounds are exact (5^25 when parsing, 5^0 for "F0"), with values 10^−25 from a midpoint or a
+  representable value. That test turns this mutation and its three mirrors red.
+- Certifying from one end goes red.
+- Skipping the doubling goes red through the round guard in about 50 ms, without hanging.
+
+The equivalent one: log2(5)'s constant off in its last bit changes floor(n·log2 5) only within
+n·2^−128 of an integer, and no n that fits a long gets that close.
+
+The internal `ParseUncapped` gets the tests past the cap until session 5's public reference
+mode. The default `Parse` keeps its cap (decision 4). Whether the cap still earns its place,
+now that 1e100000 takes 0.2 ms, is a question for Matthew (TODO).
+
+The bench was a .NET 10 file-based app: `dotnet run -c Release bench.cs` with
+`#:project <csproj>` at the top, reaching the internals by reflection. It needs no project
+file of its own.

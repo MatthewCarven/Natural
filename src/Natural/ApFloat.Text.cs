@@ -157,27 +157,37 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
 
     /// <summary>
     /// |this| × 10^t, rounded to an integer in the given mode (the directed modes look at
-    /// this value's sign). Finite, non-zero values only. The exact value is
-    /// m × 5^t × 2^(e + t): a product when t &gt;= 0, and a quotient by 5^-t otherwise,
-    /// taken with bits to spare below the point and its remainder as the sticky bit.
+    /// this value's sign). Finite, non-zero values only. Past the cache of powers of five
+    /// this goes through the certified interval engine (ApFloat.Certified.cs), which falls
+    /// back to the exact route when it can't settle the rounding.
     /// </summary>
     private uint[] ScaledToInteger(long t, RoundingMode mode)
     {
-        long e = checked(_exp + t);
-        ApFloat r;
-        if (t >= 0)
-        {
-            r = RoundExact(_negative, Magnitude.Multiply(Mant, PowerOfFive(t)), e, false, MaxPrecision, mode, minExp: 0);
-        }
-        else
-        {
-            // Enough extra bits that the quotient has two below the point and isn't zero.
-            uint[] five = PowerOfFive(-t);
-            long shift = Math.Max(0, Math.Max(e + 2, Magnitude.BitLength(five) - Magnitude.BitLength(Mant) + 1));
-            uint[] q = Magnitude.DivRem(Magnitude.ShiftLeft(Mant, shift), five, out uint[] rem);
-            r = RoundExact(_negative, q, checked(e - shift), rem.Length != 0, MaxPrecision, mode, minExp: 0);
-        }
+        ApFloat self = this;   // a lambda in a struct can't capture this
+        // The result has at most Top + 2 + t + floor(t · log2 5) bits: work with that many and a guard.
+        long resultBits = Math.Max(1, checked(Top + 2 + t + FloorLog2Of5Times(t)));
+        ApFloat r = TimesPowerOfTen(Mant, _exp, t, checked(resultBits + GuardBits),
+            (mag, exp) => RoundExact(self._negative, mag, exp, false, MaxPrecision, mode, minExp: 0),
+            () => self.ScaledToIntegerExact(t, mode));
         return r.IsZero ? Magnitude.Empty : Magnitude.ShiftLeft(r.Mant, r._exp);
+    }
+
+    /// <summary>
+    /// ScaledToInteger the exact way. The value is m × 5^t × 2^(e + t): a product when
+    /// t &gt;= 0, and a quotient by 5^-t otherwise, taken with bits to spare below the point
+    /// and its remainder as the sticky bit. The result is an integer (exponent &gt;= 0), or zero.
+    /// </summary>
+    private ApFloat ScaledToIntegerExact(long t, RoundingMode mode)
+    {
+        long e = checked(_exp + t);
+        if (t >= 0)
+            return RoundExact(_negative, Magnitude.Multiply(Mant, PowerOfFive(t)), e, false, MaxPrecision, mode, minExp: 0);
+
+        // Enough extra bits that the quotient has two below the point and isn't zero.
+        uint[] five = PowerOfFive(-t);
+        long shift = Math.Max(0, Math.Max(e + 2, Magnitude.BitLength(five) - Magnitude.BitLength(Mant) + 1));
+        uint[] q = Magnitude.DivRem(Magnitude.ShiftLeft(Mant, shift), five, out uint[] rem);
+        return RoundExact(_negative, q, checked(e - shift), rem.Length != 0, MaxPrecision, mode, minExp: 0);
     }
 
     /// <summary>floor(log10 |this|), exactly. Finite, non-zero values only.</summary>
@@ -451,13 +461,14 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// The largest decimal exponent <see cref="Parse(string)"/> accepts, either way. Decimal
-    /// text is read exactly, as digits × 10^n (the point moved to the end of the digits), and
-    /// that needs 5^|n| built in full: the cost grows with the square of n. On the machine
-    /// this was measured on, 1e10000 parsed in 0.1 s and 1e100000 in 5 s, so past this it
-    /// would be minutes, then hours, from a few characters of input. Beyond it Parse throws
-    /// <see cref="OverflowException"/> (TryParse returns false). Hex and binary text have no
-    /// limit ("0x1p+3321929" is instant), and a zero parses whatever its exponent.
+    /// The largest decimal exponent <see cref="Parse(string)"/> accepts, either way (the default,
+    /// agreed 2026-09-30). Decimal text means digits × 10^n with the point moved to the end of
+    /// the digits. Reading it exactly builds 5^|n| in full, at a cost that grows with the square
+    /// of n: 1e100000 took 5 s. Past 10^±4096 the certified interval engine does it instead, in
+    /// under a millisecond (0.2 ms for 1e100000), and uses the exact route only for a decimal on
+    /// a rounding boundary. Beyond this cap Parse throws <see cref="OverflowException"/> (TryParse
+    /// returns false). Hex and binary text have no limit ("0x1p+3321929" is instant), and a zero
+    /// parses whatever its exponent.
     /// </summary>
     public const int MaxDecimalExponent = 100_000;
 
@@ -476,11 +487,23 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     /// <exception cref="FormatException">It isn't a number.</exception>
     /// <exception cref="OverflowException">A decimal exponent past <see cref="MaxDecimalExponent"/>, or any exponent past a long.</exception>
     public static ApFloat Parse(string s, int precision, RoundingMode mode = RoundingMode.ToNearestEven, IFormatProvider? provider = null) =>
-        ParseCore(s, precision, mode, provider, out ApFloat result) switch
+        ParseOrThrow(s, precision, mode, provider, capped: true);
+
+    /// <summary>
+    /// For tests, until session 5's opt-in reference mode: Parse with no cap on the decimal
+    /// exponent. Only an exponent past a long overflows.
+    /// </summary>
+    internal static ApFloat ParseUncapped(string s, int precision, RoundingMode mode = RoundingMode.ToNearestEven,
+                                          IFormatProvider? provider = null) =>
+        ParseOrThrow(s, precision, mode, provider, capped: false);
+
+    private static ApFloat ParseOrThrow(string s, int precision, RoundingMode mode, IFormatProvider? provider, bool capped) =>
+        ParseCore(s, precision, mode, provider, capped, out ApFloat result) switch
         {
             ParseOutcome.Parsed => result,
-            ParseOutcome.TooLarge => throw new OverflowException(
-                $"\"{s}\": the exponent is too large to read exactly (decimal exponents stop at ±{MaxDecimalExponent}; hex has no limit)."),
+            ParseOutcome.TooLarge => throw new OverflowException(capped
+                ? $"\"{s}\": the exponent is too large to read exactly (decimal exponents stop at ±{MaxDecimalExponent}; hex has no limit)."
+                : $"\"{s}\": the exponent is too large (the value's binary exponent must fit a long)."),
             _ => throw new FormatException($"Not a number: \"{s}\"."),
         };
 
@@ -491,11 +514,12 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         TryParse(s, DefaultPrecision, RoundingMode.ToNearestEven, provider, out result);
 
     public static bool TryParse([NotNullWhen(true)] string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result) =>
-        ParseCore(s, precision, mode, provider, out result) == ParseOutcome.Parsed;
+        ParseCore(s, precision, mode, provider, capped: true, out result) == ParseOutcome.Parsed;
 
     private enum ParseOutcome { Parsed, NotANumber, TooLarge }
 
-    private static ParseOutcome ParseCore(string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result)
+    private static ParseOutcome ParseCore(string? s, int precision, RoundingMode mode, IFormatProvider? provider, bool capped,
+                                          out ApFloat result)
     {
         CheckPrecision(precision);
         result = default;
@@ -534,7 +558,7 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
                 return ParsePowerOfTwoRadix(span[2..], 4, negative, precision, mode, out result);
             if (span.Length > 2 && span[0] == '0' && span[1] is 'b' or 'B')
                 return ParsePowerOfTwoRadix(span[2..], 1, negative, precision, mode, out result);
-            return ParseDecimal(span, negative, precision, mode, nfi, out result);
+            return ParseDecimal(span, negative, precision, mode, nfi, capped, out result);
         }
         catch (OverflowException)
         {
@@ -551,7 +575,7 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
 
     /// <summary>digits [separator digits] [e [sign] digits]: the exact rational digits × 10^exp, rounded once.</summary>
     private static ParseOutcome ParseDecimal(ReadOnlySpan<char> span, bool negative, int precision, RoundingMode mode,
-                                             NumberFormatInfo nfi, out ApFloat result)
+                                             NumberFormatInfo nfi, bool capped, out ApFloat result)
     {
         result = default;
         int e = span.IndexOfAny('e', 'E');
@@ -569,7 +593,7 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         string digits = string.Concat(whole, fraction);
         ApInt d = ApInt.Parse(digits.Length == 0 ? "0" : digits);
         long n = checked(exponent - (fraction.Length - fraction.Count('_')));
-        if (!d.IsZero && Math.Abs(n) > MaxDecimalExponent) return ParseOutcome.TooLarge;   // before any arithmetic
+        if (capped && !d.IsZero && Math.Abs(n) > MaxDecimalExponent) return ParseOutcome.TooLarge;   // before any arithmetic
         result = FromDecimal(negative, d.Limbs, n, precision, mode);
         return ParseOutcome.Parsed;
     }
@@ -632,13 +656,25 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     }
 
     /// <summary>
-    /// ±q × 10^s, correctly rounded: the exact rational, rounded once. For s &gt;= 0 that's
-    /// the integer q × 5^s × 2^s; below, it's q × 2^s / 5^-s, divided as Divide does it
-    /// (enough quotient bits for the rounding, and the remainder as the sticky bit).
+    /// ±q × 10^s, correctly rounded. Past the cache of powers of five this goes through the
+    /// certified interval engine (ApFloat.Certified.cs), which falls back to the exact route
+    /// when it can't settle the rounding.
     /// </summary>
     private static ApFloat FromDecimal(bool negative, uint[] q, long s, int precision, RoundingMode mode)
     {
         if (q.Length == 0) return ZeroOf(negative, precision);
+        return TimesPowerOfTen(q, 0, s, (long)precision + GuardBits,
+            (mag, exp) => RoundExact(negative, mag, exp, false, precision, mode),
+            () => FromDecimalExact(negative, q, s, precision, mode));
+    }
+
+    /// <summary>
+    /// FromDecimal the exact way: the exact rational, rounded once. For s &gt;= 0 that's the
+    /// integer q × 5^s × 2^s; below, it's q × 2^s / 5^-s, divided as Divide does it (enough
+    /// quotient bits for the rounding, and the remainder as the sticky bit). q is non-zero.
+    /// </summary>
+    private static ApFloat FromDecimalExact(bool negative, uint[] q, long s, int precision, RoundingMode mode)
+    {
         if (s >= 0) return RoundExact(negative, Magnitude.Multiply(q, PowerOfFive(s)), s, false, precision, mode);
         uint[] five = PowerOfFive(-s);
         long shift = Math.Max(0, precision + 2 + Magnitude.BitLength(five) - Magnitude.BitLength(q));
