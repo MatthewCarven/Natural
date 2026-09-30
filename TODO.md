@@ -1,5 +1,26 @@
 # TODO
 
+## Order of work (agreed with Matthew 2026-09-30)
+1. **Session 4**: the certified interval engine (brief below).
+2. **Session 5**: resumable jobs, built on 4.
+3. **The IEEE operations ApFloat still lacks**: FMA, Floor/Ceiling/Truncate/Round, IEEE
+   remainder, and `ApInt` integer square root, then `ApFloat.Sqrt`. The **IEEE status
+   flags** go in first, in the same session, so each new operation reports them from day one.
+4. **Parse into an `IeeeFormat`**: small, and for very wide formats it uses 4's engine.
+5. **`ApInt` bitwise operators** (`&`, `|`, `^`, `~`), then `Pow`, `ModPow`, `Gcd`.
+6. **Generic math**: `INumber<ApInt>` / `IBinaryInteger<ApInt>` (needs 5), `INumber<ApFloat>`
+   (needs 3).
+7. **Speed**: Karatsuba plus a dedicated squaring, and a bit-parallel adder, all still
+   bitwise. Measure first: after 4, the exact route mostly runs only on ties.
+8. **Transcendentals** (exp, log, sin, π), streaming digits, million-digit constants.
+   A project of its own; needs 4's engine and likes 7's speed.
+9. **`IFloatingPointIeee754<ApFloat>`**: last, because the interface requires exp, log and trig.
+
+**Matthew's call:** report .NET 10's `double.ToString("R")` bug upstream (dotnet/runtime)?
+2^-25 and 2^-958 each print 16 digits that parse back to the double below (runtime 10.0.12;
+Python's repr is right). Repro: `double.Parse(Math.Pow(2, -25).ToString("R")) !=
+Math.Pow(2, -25)`. Pinned in `ShortestMatchesDotNetR`; details in WORKLOG (session 3).
+
 ## ApFloat — the plan (agreed 2026-09-27; core written 2026-09-30)
 Arbitrary precision in the arithmetic, IEEE 754 in behaviour and in the byte format.
 
@@ -111,7 +132,8 @@ each number shows its size without doing any maths, and the patterns jump out.
 4. The default `Parse` **keeps the cap** (`MaxDecimalExponent` = 100,000) as the sensible
    default. The reference mode is **opt-in** and uncapped.
 
-Order: session 4 (engine), then 5 (jobs), then 6 (optional extras).
+Order: session 4 (engine), then 5 (jobs). Session 6's extras were split up on
+2026-09-30 and now sit in "Order of work" at the top.
 
 ### Session 4 — the certified interval engine (brief for a fresh chat)
 Goal: parsing "1e10000000" and printing 1e100000 take milliseconds, not minutes, with the
@@ -183,30 +205,44 @@ Tests:
 - In memory only (decision 3). Opt-in reference entry point, uncapped (decision 4):
   e.g. `ApFloat.ParseReference(...)` = StartParse, then run to completion.
 - `StartFormat` for printing huge values, and later for million-digit constants.
+- **Build the job machinery to be reused** (Matthew, 2026-09-30): he expects this structure
+  to turn up in other projects "where we need bigger numbers to put a cap on possibilities"
+  and "must be able to iterate across them in a controlled and safe way". So the budget, the
+  work-unit count, `Continue`/`Complete`/`Progress` and the certificate should be a general
+  piece that a parse or a format plugs into, not something tied to parsing.
 
-### Session 6 — optional extras (pick any)
-- IEEE status flags: inexact, overflow, underflow, invalid, divide-by-zero.
-- `Parse` into an `IeeeFormat`: a bounded range means bounded cost, so 1e400 → ∞ in binary64 at once.
-- Karatsuba multiplication and a dedicated squaring, still bitwise, for the exact routes.
-- Streaming digits for huge output; disk-backed checkpoints (decision 3, if wanted).
+### The rest (was session 6; see "Order of work" for where each now goes)
+- IEEE status flags: inexact, overflow, underflow, invalid, divide-by-zero. (Order item 3.)
+- `Parse` into an `IeeeFormat`: a bounded range means bounded cost, so 1e400 → ∞ in binary64
+  at once. (Order item 4.)
+- Karatsuba multiplication and a dedicated squaring, still bitwise, for the exact routes
+  and for `ApInt`. (Order item 7.)
+- Streaming digits for huge output (order item 8); disk-backed checkpoints (decision 3, if
+  wanted, not placed yet).
 
 ## ApFloat — later
 - [ ] `FusedMultiplyAdd` (exact a×b + c, round once — nearly free here), `Sqrt`
-      (needs `ApInt` integer square root), `Floor`/`Ceiling`/`Truncate`/`Round`.
+      (needs `ApInt` integer square root), `Floor`/`Ceiling`/`Truncate`/`Round`, IEEE
+      remainder. (Order item 3.)
 - [ ] Transcendentals (exp, log, sin, π) — need error bounds (Ziv's retry strategy)
       to stay correctly rounded. A project of its own; session 4's engine is the start of it.
-- [ ] Generic math (`INumber<ApFloat>`, `IFloatingPointIeee754<ApFloat>`).
+      (Order item 8.)
+- [ ] Generic math: `INumber<ApFloat>` (order item 6), `IFloatingPointIeee754<ApFloat>`
+      (order item 9: it requires the transcendentals).
 
 ## Done
 - [x] Division — `DivRem`, `/`, `%`, truncating like C# (2026-09-27). Repeated
       `% 10` is cross-checked against double dabble in the tests.
 
+- [x] Beyond integers — fixed-point or rational/floating built on top of `ApInt`
+      (the "precision" half of the name). This became ApFloat (2026-09-30).
+
 ## Later
 - [ ] Bitwise operators on `ApInt` (`&`, `|`, `^`, `~`) — two's-complement
-      semantics for negatives, to match `BigInteger`.
-- [ ] `Pow`, `ModPow`, `Gcd`, integer `Sqrt`.
-- [ ] Beyond integers — fixed-point or rational/floating built on top of `ApInt`
-      (the "precision" half of the name).
+      semantics for negatives, to match `BigInteger`. (Order item 5.)
+- [ ] `Pow`, `ModPow`, `Gcd` (order item 5); integer `Sqrt` (order item 3, for `ApFloat.Sqrt`).
 - [ ] Speed, if it ever matters: Karatsuba multiply; a bit-parallel adder that
-      doesn't loop per carry. Keep the bitwise-only rule.
+      doesn't loop per carry. Keep the bitwise-only rule. (Order item 7: the same item as
+      the Karatsuba line under the reference mode's "The rest".)
 - [ ] Generic math interfaces (`INumber<ApInt>` etc.) if it's to be used as a drop-in.
+      (Order item 6.)
