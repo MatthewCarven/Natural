@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/Playground/">
+    <Project Path="Natural_Playground/Natural_Playground.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Natural/Natural.csproj" />
   </Folder>
