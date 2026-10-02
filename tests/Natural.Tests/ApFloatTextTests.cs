@@ -300,6 +300,24 @@ public class ApFloatTextTests
     public void CustomPatterns(double d, string pattern, string expected) =>
         Assert.Equal(expected, ((ApFloat)d).ToString(pattern, Inv));
 
+    /// <summary>
+    /// A pattern with no digit placeholders prints no digits, so its value must not be
+    /// scaled to an integer at all. It used to be, and scaling a value with an enormous
+    /// exponent overflows -- so a literal-only pattern threw instead of printing.
+    /// </summary>
+    [Theory]
+    [InlineData("'hello'", "hello")]
+    [InlineData("'x'", "x")]
+    [InlineData("'hi '", "hi ")]
+    [InlineData("''", "")]
+    [InlineData("'a''b'", "ab")]
+    public void CustomPatternWithoutPlaceholdersIgnoresTheValue(string pattern, string expected)
+    {
+        ApFloat huge = ApFloat.Parse("1e1000000000000000000");
+        Assert.Equal(expected, huge.ToString(pattern, Inv));
+        Assert.Equal("-" + expected, (-huge).ToString(pattern, Inv));   // the sign still applies
+    }
+
     [Theory]
     [InlineData("0.00;(0.00)")]
     [InlineData("0.0%")]
