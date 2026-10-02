@@ -24,7 +24,7 @@ internal sealed class FloatPanel : UserControl
         ThousandsSeparator = false,
         TextAlign = HorizontalAlignment.Right,
     };
-    private readonly ComboBox _mode = new()
+    private readonly ComboBox _modeBox = new()
     {
         DropDownStyle = ComboBoxStyle.DropDownList,
         Width = 132,
@@ -34,11 +34,18 @@ internal sealed class FloatPanel : UserControl
 
     private string _operation = FloatReport.Add;
 
+    /// <summary>
+    /// Held here rather than read back from <see cref="_modeBox"/>: a ComboBox whose
+    /// DataSource has been set but which is not yet bound to a window still reports a
+    /// null SelectedItem, so the first Report() would fault.
+    /// </summary>
+    private RoundingMode _rounding = RoundingMode.ToNearestEven;
+
     public FloatPanel()
     {
         Dock = DockStyle.Fill;
 
-        _mode.DataSource = Enum.GetValues<RoundingMode>().ToList();
+        _modeBox.DataSource = Enum.GetValues<RoundingMode>().ToList();
 
         var root = new TableLayoutPanel
         {
@@ -61,7 +68,11 @@ internal sealed class FloatPanel : UserControl
         _a.TextChanged += (_, _) => Report();
         _b.TextChanged += (_, _) => Report();
         _precision.ValueChanged += (_, _) => Report();
-        _mode.SelectedIndexChanged += (_, _) => Report();
+        _modeBox.SelectedIndexChanged += (_, _) =>
+        {
+            if (_modeBox.SelectedItem is RoundingMode mode) _rounding = mode;
+            Report();
+        };
         Report();
     }
 
@@ -91,7 +102,7 @@ internal sealed class FloatPanel : UserControl
         flow.Controls.Add(new Label { Text = "precision", AutoSize = true, Margin = new Padding(0, 7, 4, 0) });
         flow.Controls.Add(_precision);
         flow.Controls.Add(new Label { Text = "mode", AutoSize = true, Margin = new Padding(12, 7, 4, 0) });
-        flow.Controls.Add(_mode);
+        flow.Controls.Add(_modeBox);
         return flow;
     }
 
@@ -113,7 +124,17 @@ internal sealed class FloatPanel : UserControl
 
     private void Report()
     {
-        string text = FloatReport.Describe(_a.Text, _b.Text, _operation, (int)_precision.Value, (RoundingMode)_mode.SelectedItem!);
+        string text;
+        try
+        {
+            text = FloatReport.Describe(_a.Text, _b.Text, _operation, (int)_precision.Value, _rounding);
+        }
+        catch (Exception ex)
+        {
+            // This is a display tool, so an unexpected failure should be shown rather
+            // than thrown at a keystroke handler and taken out by WinForms.
+            text = $"{ex.GetType().Name}: {ex.Message}";
+        }
 
         // The first line is "a op b = r"; the rest is detail. Splitting keeps the
         // result box to the one line that answers the question.
