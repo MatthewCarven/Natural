@@ -46,6 +46,16 @@ public readonly partial struct ApInt
     }
 
     /// <summary>
+    /// Decimal digits to reserve for a magnitude of <paramref name="bits"/> bits, which
+    /// is bits × log10(2). The multiplier must over-estimate: 4096 × log10(2) is
+    /// 1233.0188..., so 1233 is its floor and falls short by 4.6e-6 of a digit per bit.
+    /// That shortfall passes unnoticed until it outgrows the slack -- at 1,955,154 bits
+    /// it does, and then the BCD register below is a word too short, which is a write
+    /// past the end rather than a slow path. 1234 over-estimates instead.
+    /// </summary>
+    internal static long DecimalDigitsForBits(long bits) => ((bits * 1234) >> 12) + 2;
+
+    /// <summary>
     /// Binary to decimal by "double dabble" (shift-and-add-3), the way hardware
     /// does it with no divider: shift the number's bits, top first, into a BCD
     /// register one at a time; before each shift, add 3 to every BCD digit that is
@@ -60,9 +70,7 @@ public readonly partial struct ApInt
         long bits = Magnitude.BitLength(mag);
         if (bits == 0) return "0";
 
-        // Decimal digits needed: bits * log10(2), where 1233 / 4096 ~ log10(2); +2 for slack.
-        long maxDigits = ((bits * 1233) >> 12) + 2;
-        var bcd = new uint[(maxDigits + 7) / 8 + 1];
+        var bcd = new uint[(DecimalDigitsForBits(bits) + 7) / 8 + 1];
         int used = 1;   // BCD words that can be non-zero so far
 
         for (long i = bits - 1; i >= 0; i--)
@@ -87,7 +95,7 @@ public readonly partial struct ApInt
             if (carry != 0) bcd[used++] = carry;
         }
 
-        var sb = new StringBuilder((int)Math.Min(maxDigits, int.MaxValue));
+        var sb = new StringBuilder((int)Math.Min(DecimalDigitsForBits(bits), int.MaxValue));
         bool leading = true;
         for (int w = used - 1; w >= 0; w--)
         {
