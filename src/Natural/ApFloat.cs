@@ -101,6 +101,13 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
     };
 
     public static ApFloat Zero => default;
+
+    // Diagnostics / Debug inspection
+    internal string KindName => _kind.ToString();
+    internal long RawExponent => _exp;
+    internal uint[] RawMantissa => Mant;
+    internal long? TopBit => _kind == Kind.Finite ? Top : null;
+
     public static ApFloat NegativeZero => ZeroOf(true, DefaultPrecision);
     public static ApFloat PositiveInfinity => InfinityOf(false, DefaultPrecision);
     public static ApFloat NegativeInfinity => InfinityOf(true, DefaultPrecision);
