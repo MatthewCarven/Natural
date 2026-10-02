@@ -47,7 +47,6 @@ internal static class FloatReport
     private static void Values(StringBuilder sb, ApFloat a, ApFloat b, ApFloat r, string op, int precision)
     {
         sb.AppendLine($"{a.ToString("R")} {op} {b.ToString("R")} = {r.ToString("R")}");
-        sb.AppendLine();
         int decimals = ApFloat.DecimalDigitsFor(precision) - 1;
         Format(sb, $"E{decimals}", () => r.ToString($"E{decimals}"));
         Format(sb, "F4", () => r.ToString("F4"));

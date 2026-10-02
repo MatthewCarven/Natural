@@ -13,6 +13,9 @@ internal sealed class FloatPanel : UserControl
     /// <summary>Well under <see cref="ApFloat.MaxPrecision"/>; above this a keystroke gets slow.</summary>
     private const int PracticalPrecisionCeiling = 65_536;
 
+    /// <summary>One line of 10pt Consolas, plus room for the box's own margins.</summary>
+    private const int ResultBoxHeight = 34;
+
     private readonly TextBox _a = OperandBox(DefaultA);
     private readonly TextBox _b = OperandBox(DefaultB);
     private readonly NumericUpDown _precision = new()
@@ -56,7 +59,7 @@ internal sealed class FloatPanel : UserControl
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // operands
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));      // operation, precision, mode
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 150)); // result
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, ResultBoxHeight)); // result
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // everything else
 
         root.Controls.Add(OperandRow(), 0, 0);
@@ -83,12 +86,24 @@ internal sealed class FloatPanel : UserControl
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        table.Controls.Add(new Label { Text = "a", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 9, 3, 3) }, 0, 0);
+        table.Controls.Add(OperandLabel("a", 3), 0, 0);
         table.Controls.Add(_a, 1, 0);
-        table.Controls.Add(new Label { Text = "b", AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(9, 9, 3, 3) }, 2, 0);
+        table.Controls.Add(OperandLabel("b", 9), 2, 0);
         table.Controls.Add(_b, 3, 0);
         return table;
     }
+
+    /// <summary>
+    /// Dock.Fill with MiddleLeft rather than an anchor and a margin: an AutoSize label
+    /// anchored to the left ends up below the row instead of beside it.
+    /// </summary>
+    private static Label OperandLabel(string text, int leftMargin) => new()
+    {
+        Text = text,
+        Dock = DockStyle.Fill,
+        TextAlign = ContentAlignment.MiddleLeft,
+        Margin = new Padding(leftMargin, 3, 3, 3),
+    };
 
     private Control Controls_()
     {
