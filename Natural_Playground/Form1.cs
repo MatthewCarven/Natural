@@ -28,6 +28,23 @@ namespace Natural_Playground
         private bool _floatAValid;
         private bool _floatBValid;
 
+        private Func<ApFloat> _boundFloatProvider;
+        private System.Windows.Forms.Timer _bindTimer;
+
+        public void BindToTotalDP(Func<ApFloat> provider)
+        {
+            _boundFloatProvider = provider;
+            txtFloatA.ReadOnly = true; // prevent manual edits while bound
+            _bindTimer = new System.Windows.Forms.Timer();
+            _bindTimer.Interval = 200; // updates 5 times a second
+            _bindTimer.Tick += (s, e) => {
+                string val = _boundFloatProvider().ToString("R", CultureInfo.InvariantCulture);
+                if (txtFloatA.Text != val)
+                    txtFloatA.Text = val;
+            };
+            _bindTimer.Start();
+        }
+
         public Form1()
         {
             InitializeComponent();
@@ -35,6 +52,9 @@ namespace Natural_Playground
 
         private void Form1_Load(object sender, EventArgs e)
         {
+            tabMain.TabPages.Remove(tabApInt);
+            tabMain.SelectedTab = tabApFloat;
+
             SetupGridColumns(dgvIntLimbs);
             SetupGridColumns(dgvFloatLimbs);
 
