@@ -51,6 +51,13 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   (no code shared with `RoundExact`), an IEEE encoder, and biased random bit patterns.
   The hardware (`double`, `float`, `Half`) is the second oracle. `CertifiedTests.cs` pins
   values for exponents like 10^7 that were computed offline with exact Python integers.
+- `Natural_Playground/` — a WinForms calculator over ApFloat that takes the result apart
+  (significand, exponent, ulp, every format, and a check against `double`). It's in the
+  solution, so the solution builds on Windows only. `FloatReport` makes the text with no UI:
+  run it from a file-based app with `#:property TargetFramework=net10.0-windows`,
+  `#:property PublishAot=false` and `#:project` on the playground, through reflection.
+- `README.md` — the public front door. Its samples were run once; keep them compiling and
+  its test count current.
 
 ## Commands
 

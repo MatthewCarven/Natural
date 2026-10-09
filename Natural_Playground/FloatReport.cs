@@ -14,6 +14,13 @@ internal static class FloatReport
     /// <summary>How wide a significand or bit string may get before it's clipped.</summary>
     private const int MaxDigitsShown = 72;
 
+    /// <summary>
+    /// Past this many bits either side of the binary point, F4 and B are too long to make on
+    /// a keystroke. F4 of 1e30000 (about 100,000 bits) takes 0.2 s and the cost grows with the
+    /// square: 1e200000 takes 10 s, and 1e1000000 would hold the window for minutes.
+    /// </summary>
+    private const long MaxPrintedBits = 100_000;
+
     public static string Describe(string aText, string bText, string op, int precision, RoundingMode mode)
     {
         try
@@ -35,7 +42,7 @@ internal static class FloatReport
             var sb = new StringBuilder();
             Values(sb, a, b, r, op, precision);
             Decomposition(sb, r, precision);
-            DoubleCheck(sb, a, b, r, op, precision);
+            DoubleCheck(sb, a, b, r, op, precision, mode);
             return sb.ToString();
         }
         catch (Exception ex) when (ex is FormatException or OverflowException or DivideByZeroException)
@@ -49,9 +56,14 @@ internal static class FloatReport
         sb.AppendLine($"{a.ToString("R")} {op} {b.ToString("R")} = {r.ToString("R")}");
         int decimals = ApFloat.DecimalDigitsFor(precision) - 1;
         Format(sb, $"E{decimals}", () => r.ToString($"E{decimals}"));
-        Format(sb, "F4", () => r.ToString("F4"));
+        long top = r.IsFinite && !r.IsZero ? Top(r) : 0;
+        Format(sb, "F4", () => top > MaxPrintedBits
+            ? $"-- not printed: about {(long)(top * Math.Log10(2)):N0} digits, too many for a keystroke --"
+            : r.ToString("F4"));
         Format(sb, "A", () => r.ToString("A"));
-        Format(sb, "B", () => BinaryView(r));
+        Format(sb, "B", () => Math.Abs(top) > MaxPrintedBits
+            ? $"-- not printed: about {Math.Abs(top):N0} bits, too many for a keystroke --"
+            : BinaryView(r));
         Format(sb, "G", () => r.ToString("G"));
         sb.AppendLine();
     }
@@ -112,7 +124,7 @@ internal static class FloatReport
         {
             Row(sb, "significand", "0");
             Row(sb, "top", "-- a zero has no binade --");
-            Row(sb, "ulp", $"2^{-precision + 1}   (smallest non-zero at this precision)");
+            Row(sb, "ulp", "-- none: the exponent is unbounded, so no value is next to zero --");
             sb.AppendLine();
             return;
         }
@@ -131,8 +143,10 @@ internal static class FloatReport
     /// <summary>
     /// The library claims to match double exactly at 53 bits through double's normal
     /// range, so run the same operation on the hardware and show whether it does.
+    /// The hardware only rounds to nearest, so in the other modes there's nothing to check.
     /// </summary>
-    private static void DoubleCheck(StringBuilder sb, ApFloat a, ApFloat b, ApFloat r, string op, int precision)
+    private static void DoubleCheck(StringBuilder sb, ApFloat a, ApFloat b, ApFloat r, string op, int precision,
+                                    RoundingMode mode)
     {
         sb.AppendLine("── versus double " + new string('─', 43));
 
@@ -151,7 +165,11 @@ internal static class FloatReport
 
         // The exponent here is unbounded, so a finite result can sit past double's reach
         // entirely. Both sides then read infinity, which is agreement about nothing.
-        if (r.IsFinite && !r.IsZero && (double.IsInfinity(actual) || actual == 0.0))
+        if (mode != RoundingMode.ToNearestEven)
+        {
+            Row(sb, "", $"not compared: double only rounds to nearest, this ran {mode}");
+        }
+        else if (r.IsFinite && !r.IsZero && (double.IsInfinity(actual) || actual == 0.0))
         {
             Row(sb, "", double.IsInfinity(actual)
                 ? "finite here, but past double's range"
@@ -159,7 +177,7 @@ internal static class FloatReport
         }
         else
         {
-            Row(sb, "", actual.Equals(expected) ? "agrees" : "DIFFERS");
+            Row(sb, "", SameDouble(actual, expected) ? "agrees" : "DIFFERS");
         }
 
         if (precision != 53)
@@ -169,6 +187,10 @@ internal static class FloatReport
 
     /// <summary>The binade's leading power of two: 2^Top &lt;= |x| &lt; 2^(Top+1).</summary>
     private static long Top(ApFloat r) => r.Exponent + r.Significand.BitLength - 1;
+
+    /// <summary>Bit for bit, so +0 and -0 differ; any NaN matches any NaN.</summary>
+    private static bool SameDouble(double x, double y) =>
+        double.IsNaN(x) ? double.IsNaN(y) : BitConverter.DoubleToInt64Bits(x) == BitConverter.DoubleToInt64Bits(y);
 
     private static void Row(StringBuilder sb, string label, string value) =>
         sb.AppendLine($"{label,-13}{value}");

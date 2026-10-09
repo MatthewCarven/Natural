@@ -426,3 +426,45 @@ duplicate. Breaking it on purpose: putting the cap back goes red in 58 tests. Ma
 exponent sums unchecked goes red in the two 3e18 rows. Making only one unchecked stays green,
 but that one is equivalent, since the other sum overflows on the same inputs.
 Session 5's brief now says what the jobs are for: stepping long work, not unlocking exponents.
+
+## 2026-10-09 — The space-bunny branch, reviewed
+
+Matthew had another agent (opencode) work on a branch, `space-bunny`, on 2026-10-02/03, and
+asked for a check. Seven commits on top of `f8fc52a`, all pushed to `origin/space-bunny`:
+- The WinForms playground (`Natural_Playground/`), made to build (a stray `cc` after
+  `</Project>`, net8.0-windows against a net10.0 library, a stray `public sdad`), then a
+  calculator panel over ApFloat, and two fixes to it (a null `SelectedItem`, the layout).
+- **A real bug in `ApInt.ToString`**: the BCD register was sized with 1233/4096 for log10 2,
+  which is under it. At 1,955,154 bits (588,561 digits) the register is a word short and
+  double dabble writes past the end. Now 1234/4096, as `DecimalDigitsForBits`, with tests at
+  every length up to 2,000,000. Checked: the arithmetic holds (1,955,154 × 4.6e-6 = 9 digits
+  short, against 8 digits of slack).
+- **A custom pattern with no placeholders** ("'hello'") scaled the value anyway, so on
+  1e(10^18) it threw. Now it prints the literal; "-hello" for a negative matches .NET (checked).
+- README.md.
+
+506 tests, all green; the build has no warnings. What the review found and fixed:
+- **The `ScaledToInteger` comment was false.** The branch rewrote it to say output never uses
+  the interval engine and can't. Measured: E16 and R of 1e100000 and 1e-100000 take one
+  interval round in about 2 ms. F0/F4 go exact, but only because they scale by a few decimals,
+  inside the cache (F0 of 1e100000: 2.5 s). The comment now says that.
+- **The `Parse` comment had the crossover wrong**: "roughly 1,100 at 256 bits" (it's the
+  cache, 4096, at every precision up to about 1,100 bits) and "past ~1,100 bits it goes
+  straight to the exact route" (it starts later: measured exact at 10^14000 and intervals at
+  10^15000 for 4096 bits, against about 14,400 from the formula).
+- The custom-pattern fix had its lines at column 0; re-indented, comment shortened.
+- README: `value.FromIeeeBytes` is static (`ApFloat.FromIeeeBytes`); "the CPU's add and
+  multiply are never used" was too strong (exponents and lengths use them, and so does double
+  dabble's add-3 on BCD); the test count was 501; the solution now builds on Windows only.
+  The rest of its samples were run again and print what it says.
+- Playground: the `double` check said DIFFERS for correct results in the directed modes
+  (5, 7 and 4 of 20 cases), since the hardware only rounds to nearest; it now says it can't
+  compare there. It compares bit for bit (±0 differ). The ulp shown for zero
+  ("smallest non-zero") was wrong with an unbounded exponent. And F4 and B froze the window on
+  big values, one keystroke at a time (F4 of 1e200000: 10 s; 1e1000000 would be minutes):
+  past 100,000 bits either side of the point they now say how long they'd be instead.
+
+Not changed, for Matthew: whether `space-bunny` goes to master (there's no local master
+here, just `origin/master` at `f8fc52a`); the two Gemini branches (`Gemini`,
+`gemini-illuminatigame`, from the same scaffold commit: a different GUI and internal debug
+accessors on ApFloat, `RawMantissa` handing out the live array); and the Windows-only build.

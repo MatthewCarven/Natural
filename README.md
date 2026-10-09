@@ -4,9 +4,10 @@ Arbitrary-precision integers and binary floating-point numbers for .NET 10, with
 arithmetic built out of **bitwise operations**.
 
 Not `System.Numerics.BigInteger` with more digits. The addition, subtraction,
-multiplication and division are all built from XOR, AND, OR, NOT and shifts — the CPU's
-own add and multiply instructions are never used. `FullAdd` is the single primitive every
-other operation is expressed in terms of:
+multiplication and division are all built from XOR, AND, OR, NOT and shifts, not from the
+CPU's own add and multiply instructions. (Plain integer arithmetic still counts lengths and
+exponents, and decimal output adds 3 to BCD digits that can't carry.) `FullAdd` is the
+single primitive every other operation is expressed in terms of:
 
 > XOR is the sum with the carries left out; AND is exactly where carries are generated.
 > Shift the carries up one place and add them in again, until there are none left.
@@ -143,7 +144,7 @@ Bytes in any format, either byte order:
 
 ```csharp
 value.ToIeeeBytes(IeeeFormat.Binary32);          // little-endian by default
-value.FromIeeeBytes(bytes, IeeeFormat.Binary64, bigEndian: true);
+ApFloat.FromIeeeBytes(bytes, IeeeFormat.Binary64, bigEndian: true);
 ```
 
 ## Decimal exponents without a cap
@@ -164,7 +165,7 @@ now refuses only a value whose binary exponent would not fit a `long`.
 
 ## How it is tested
 
-501 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
+506 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
 with the thing under test:
 
 - **`BigInteger`**, converted through raw magnitude bytes so the arithmetic tests don't
@@ -187,11 +188,12 @@ result is computed exactly and rounded exactly once, at a precision you choose.
 ## Build
 
 ```
-dotnet test Natural.slnx                                        # 501 tests
+dotnet test Natural.slnx                                        # 506 tests
 dotnet run -c Release tests/bench/timing.cs                     # decimal text timings
 ```
 
-Requires .NET 10. No package dependencies.
+Requires .NET 10. No package dependencies. The solution includes the playground, which is
+WinForms, so it builds on Windows only.
 
 ## Layout
 

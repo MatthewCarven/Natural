@@ -157,13 +157,12 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
 
     /// <summary>
     /// |this| × 10^t, rounded to an integer in the given mode (the directed modes look at
-    /// this value's sign). Finite, non-zero values only.
-    ///
-    /// This goes to the exact route directly rather than through the certified interval
-    /// engine (ApFloat.Certified.cs), and cannot do otherwise: the result has to carry
-    /// every digit, so the engine's working precision starts at the result's own bit
-    /// length, which is already past where a round beats the exact route. Certifying an
-    /// answer this wide needs bounds as wide as the answer.
+    /// this value's sign). Finite, non-zero values only. Past the cache of powers of five
+    /// this goes through the certified interval engine (ApFloat.Certified.cs), which falls
+    /// back to the exact route when it can't settle the rounding. That's E, G and R on a
+    /// value with a huge decimal exponent: t is about minus that exponent, and 1e100000 prints
+    /// in a millisecond or two. F and custom patterns scale by their few decimals, inside the
+    /// cache, so they take the exact route and pay for every digit (F0 of 1e100000: 2.5 s).
     /// </summary>
     private uint[] ScaledToInteger(long t, RoundingMode mode)
     {
@@ -424,12 +423,9 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         }
 
         // Round to every fraction place, then drop trailing zeros back to the last 0 placeholder.
-// A pattern with no digit placeholders at all -- "'hello'" -- prints no digits, so the
-// result is only read under `if (inNumber)` below and computing it here is dead work.
-// It is not harmless work either: scaling a value with an enormous exponent to an
-// integer is what overflows, so a literal-only pattern on such a value used to throw
-// rather than print its literal.
-string digits = !inNumber || IsZero ? "0" : Decimal(ScaledToInteger(fractionPlaces, mode));
+        // A pattern with no placeholders ("'hello'") prints no digits, so don't make any: on a
+        // value with an enormous exponent, scaling to an integer overflows.
+        string digits = !inNumber || IsZero ? "0" : Decimal(ScaledToInteger(fractionPlaces, mode));
         digits = digits.PadLeft(fractionPlaces + 1, '0');
         string whole = digits[..^fractionPlaces].TrimStart('0');
         string fraction = digits[^fractionPlaces..];
@@ -482,15 +478,12 @@ string digits = !inNumber || IsZero ? "0" : Decimal(ScaledToInteger(fractionPlac
     /// Hex and binary use "." for the point; decimal uses the culture's separator.
     ///
     /// Any exponent is fine whose value's binary exponent fits a long (decimal ones up to about
-    /// ±2.7 × 10^18). Past the cache of powers of five, decimal text goes through the certified
-    /// interval engine, so "1e1000000000000000000" takes about 2 ms. That crossover moves with
-    /// the precision asked for: the engine has to outgrow the exact route, which it only does
-    /// while the exponent is large relative to the precision -- roughly 1,100 at 256 bits, but
-    /// about 14,000 at 4096, and past ~1,100 bits of precision it goes straight to the exact
-    /// route instead. Either way the result is the correctly rounded one; only the cost differs.
-    /// The time also follows the length of the text: a 30,000-digit decimal takes most of a
-    /// second. (There was a cap at ±100,000 until the engine came in; Matthew dropped it on
-    /// 2026-09-30.)
+    /// ±2.7 × 10^18). Past 10^±4096 decimal text goes through the certified interval engine, so
+    /// "1e1000000000000000000" takes about 2 ms. Above about 1,100 bits of precision the engine
+    /// starts later, where its first round is cheaper than the exact route: past about
+    /// 10^±14,400 at 4096 bits. The result is the same either way; only the cost differs. The
+    /// time also follows the length of the text: a 30,000-digit decimal takes most of a second.
+    /// (There was a cap at ±100,000 until the engine came in; Matthew dropped it on 2026-09-30.)
     /// </summary>
     /// <exception cref="FormatException">It isn't a number.</exception>
     /// <exception cref="OverflowException">The value's binary exponent wouldn't fit a long.</exception>
