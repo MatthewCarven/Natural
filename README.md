@@ -225,5 +225,4 @@ detail.
 
 ## License
 
-No license file yet, which means the default: all rights reserved. Add one before you want
-anyone else to use this.
+MIT. See `LICENSE`.
