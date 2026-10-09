@@ -170,8 +170,23 @@ Goal: an opt-in reference mode whose work the caller holds, steps, pauses and re
 any more (decision 4, changed), so jobs are for long work, not for big exponents. The job
 machinery must be a general piece, not tied to parsing (Matthew's reuse aim below).
 
-**Ask Matthew first** (one short question with a preview, recommendation first, as usual):
-the API shape below. Then build.
+**Asked and answered (Matthew, 2026-10-09), both as recommended:**
+1. **A job you step.** `var job = ApFloat.StartParse(text, precision: 256);` then
+   `while (!job.Continue(TimeSpan.FromMilliseconds(50))) …` (or `Continue(units)`), with
+   `job.Progress`, `job.WorkDone`, `job.Result` (the same bits `Parse` gives) and
+   `job.Certificate` (rounds, working bits, exact or not, Low ≤ exact value ≤ High). No
+   `RunAsync` yet; it can go on top later without changing this.
+2. **`Natural.Jobs`, in this project**: one file, its own namespace, nothing from the numbers,
+   so it can move to its own project later with no change to callers.
+
+Build notes from 2026-10-09 (nothing written yet; the baseline re-measured the same as below):
+`Job<T>` plus `Job<T, TCertificate>` for the certificate; the body is an iterator over a
+`JobContext` that sets `Result` and `ExpectedWork`; `Continue` stops after the step that crosses
+the budget; a fault is rethrown on every later call; `IDisposable`. On the numbers side: the
+decimal digit loop yields every 4,096 limb steps (a step ends on a digit), and
+`TimesPowerOfTen` becomes an iterator that yields per round, with the one-shot `Parse` draining
+the same steps (measure short-parse overhead against the old build, A B A B). Syntax errors
+throw from `StartParse`; an exponent overflow inside the job throws `Parse`'s message.
 
 What actually takes time now (Release, measured 2026-09-30, by `tests/bench/timing.cs`; run it
 first as the baseline, and remember this machine's two speeds: its interval timings came in
