@@ -56,29 +56,84 @@ public readonly partial struct ApFloat
     /// rounds a positive mag × 2^exp to the target (any rounding is monotone, which is all
     /// this needs), and <paramref name="exact"/> gives the same result the exact way.
     /// The first round works with <paramref name="startBits"/> bits, plus n's bit length.
+    /// The steps below, run to the end; the test hooks get the rounds and the route.
     /// </summary>
     private static ApFloat TimesPowerOfTen(uint[] mag, long exp, long n, long startBits,
                                            Func<uint[], long, ApFloat> round, Func<ApFloat> exact)
     {
-        LastRounds = 0;
-        LastExact = false;
-        Route route = ForcedRoute;
-        long power = Math.Abs(n);
-        if (route == Route.Exact || (route == Route.Auto && power < CachedFives)) return Exact();
+        var pinning = new Pinning();
+        return RunToEnd(TimesPowerOfTenSteps(mag, exp, n, startBits, round, exact, ForcedRoute, pinning), pinning);
+    }
 
-        // A round costs about 4·log2(n)·W² bit steps and the exact route about L², where L is
-        // 5^n's bit length. So once W passes L/8 (it never needs to pass L: the bounds are
-        // exact there), the exact route is the cheaper way to finish.
+    /// <summary>Runs pinning steps to the end, on this thread, and leaves the rounds and the route in the test hooks.</summary>
+    private static ApFloat RunToEnd(IEnumerable<long> steps, Pinning pinning)
+    {
+        try
+        {
+            foreach (long _ in steps) { }
+        }
+        finally
+        {
+            LastRounds = pinning.Rounds;
+            LastExact = pinning.Exact;
+        }
+        return pinning.Result;
+    }
+
+    /// <summary>
+    /// What pinning X × 10^n took, filled in as the steps go: the result, the rounds, and the
+    /// last round's interval, for the test hooks and for a job's certificate.
+    /// </summary>
+    private sealed class Pinning
+    {
+        public ApFloat Result;
+        public int Rounds;
+        public long WorkingBits;
+        public bool Exact;
+        /// <summary>The last round's ends: Low &lt;= X × 10^n &lt;= High, at WorkingBits.</summary>
+        public ApFloat? Low, High;
+        /// <summary>An estimate of the next step's limb steps, for progress: 0 once done.</summary>
+        public long NextUnits;
+    }
+
+    /// <summary>
+    /// <see cref="TimesPowerOfTen"/> as steps a job can pause between: one per interval round,
+    /// and one for the exact route if it runs. Each yields an estimate of its limb steps (see
+    /// <see cref="RoundUnits"/>), the same on any machine. <paramref name="route"/> is read by
+    /// the caller, since a job's steps may run on another thread. <see cref="FirstStepUnits"/>
+    /// estimates the first step before it runs.
+    /// </summary>
+    private static IEnumerable<long> TimesPowerOfTenSteps(uint[] mag, long exp, long n, long startBits,
+                                                          Func<uint[], long, ApFloat> round, Func<ApFloat> exact,
+                                                          Route route, Pinning pinning)
+    {
+        long power = Math.Abs(n), xBits = Magnitude.BitLength(mag);
+        if (route == Route.Exact || (route == Route.Auto && power < CachedFives))
+        {
+            pinning.Exact = true;
+            pinning.Result = exact();
+            pinning.NextUnits = 0;
+            yield return ExactUnits(xBits, n, startBits);
+            yield break;
+        }
+
         long exactBits = FloorLog2Of5Times(power) + 1;
         ApFloat x = Normalised(false, mag, exp, MaxPrecision);
 
         // Squaring doubles a relative error, so the bounds on 5^n end up about n · 2^(2-W)
         // apart, relatively, not log(n) times: n's bit length goes on top of the guard bits.
-        long nBits = 64 - System.Numerics.BitOperations.LeadingZeroCount((ulong)power);
+        long nBits = NBits(power);
         for (long w = startBits + nBits; ; w *= 2)
         {
-            if (w > MaxPrecision || (route == Route.Auto && w * 8 >= exactBits)) return Exact();
-            if (++LastRounds > MaxRounds) throw new InvalidOperationException("The interval engine didn't converge.");
+            if (ExactFinishes(w, exactBits, route))
+            {
+                pinning.Exact = true;
+                pinning.Result = exact();
+                pinning.NextUnits = 0;
+                yield return ExactUnits(xBits, n, startBits);
+                yield break;
+            }
+            if (++pinning.Rounds > MaxRounds) throw new InvalidOperationException("The interval engine didn't converge.");
 
             int bits = (int)w;
             var (lo5, hi5) = PowerOfFiveBounds(power, bits);
@@ -90,17 +145,73 @@ public readonly partial struct ApFloat
                 : Divide(x, lo5, bits, RoundingMode.TowardPositive);
 
             // × 2^n: the other half of 10^n.
-            ApFloat a = round(lo.Mant, checked(lo._exp + n));
-            ApFloat b = round(hi.Mant, checked(hi._exp + n));
-            if (SameValue(a, b)) return a;
-        }
-
-        ApFloat Exact()
-        {
-            LastExact = true;
-            return exact();
+            long loExp = checked(lo._exp + n), hiExp = checked(hi._exp + n);
+            pinning.WorkingBits = w;
+            pinning.Low = new ApFloat(Kind.Finite, false, lo.Mant, loExp, bits);
+            pinning.High = new ApFloat(Kind.Finite, false, hi.Mant, hiExp, bits);
+            ApFloat a = round(lo.Mant, loExp);
+            ApFloat b = round(hi.Mant, hiExp);
+            long units = RoundUnits(xBits, w, nBits);
+            if (SameValue(a, b))
+            {
+                pinning.Result = a;
+                pinning.NextUnits = 0;
+                yield return units;
+                yield break;
+            }
+            pinning.NextUnits = ExactFinishes(2 * w, exactBits, route) ? ExactUnits(xBits, n, startBits) : RoundUnits(xBits, 2 * w, nBits);
+            yield return units;
         }
     }
+
+    /// <summary>
+    /// Whether a round at w bits would cost more than the exact route. A round costs about
+    /// 4·log2(n)·W² bit steps and the exact route about L², where L is 5^n's bit length. So
+    /// once W passes L/8 (it never needs to pass L: the bounds are exact there), the exact
+    /// route is the cheaper way to finish.
+    /// </summary>
+    private static bool ExactFinishes(long w, long exactBits, Route route) =>
+        w > MaxPrecision || (route == Route.Auto && w * 8 >= exactBits);
+
+    private static long NBits(long power) => 64 - System.Numerics.BitOperations.LeadingZeroCount((ulong)power);
+
+    /// <summary>The estimate of <see cref="TimesPowerOfTenSteps"/>'s first step, before it runs.</summary>
+    private static long FirstStepUnits(long xBits, long n, long startBits, Route route)
+    {
+        long power = Math.Abs(n);
+        if (route == Route.Exact || (route == Route.Auto && power < CachedFives)) return ExactUnits(xBits, n, startBits);
+        // Past the cache the steps compute 5^n's bit length anyway, and the parse costs far more.
+        long w = startBits + NBits(power);
+        return ExactFinishes(w, FloorLog2Of5Times(power) + 1, route) ? ExactUnits(xBits, n, startBits) : RoundUnits(xBits, w, NBits(power));
+    }
+
+    /// <summary>
+    /// Limb steps for one round at w bits, estimated from the sizes: the bounds on 5^n take
+    /// about three w-bit shift-and-add products per bit of n, each about w²/64, and X times
+    /// (or over) the two bounds about xBits·w/16.
+    /// </summary>
+    private static long RoundUnits(long xBits, long w, long nBits) =>
+        Units((Int128)3 * nBits * w * w / 64 + (Int128)xBits * w / 16);
+
+    /// <summary>
+    /// Limb steps for the exact route, estimated from the sizes: 5^|n| when it's past the
+    /// cache (its last squaring dominates: about L²/144 in all, for L its bit length), then
+    /// X × 5^n (xBits·L/64), or the restoring division by 5^|n|: a step per quotient bit, and
+    /// it keeps all of them, at least startBits (about quotient bits · L/64).
+    /// L is |n|·log2(5) to seven digits: an estimate needn't pay for the exact bit length,
+    /// and on a short parse that would cost more than the parse.
+    /// </summary>
+    private static long ExactUnits(long xBits, long n, long startBits)
+    {
+        long power = Math.Abs(n);
+        Int128 fiveBits = (Int128)power * 2_321_929 / 1_000_000 + 1;
+        Int128 build = power < CachedFives ? 0 : fiveBits * fiveBits / 144;
+        Int128 use = n >= 0 ? xBits * fiveBits / 64 : Int128.Max(xBits - fiveBits, startBits + 2) * fiveBits / 64;
+        return Units(build + use + 1);
+    }
+
+    /// <summary>An estimate as a long, held well clear of overflow when it's added up.</summary>
+    private static long Units(Int128 estimate) => (long)Int128.Min(estimate, long.MaxValue / 4);
 
     /// <summary>
     /// lo &lt;= 5^n &lt;= hi, each at most <paramref name="workingBits"/> bits long: square and

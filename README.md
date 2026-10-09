@@ -163,9 +163,30 @@ ApFloat.Parse("1e1000000000000000000", 53).ToString("E6");   // 1.000000E+100000
 There was a cap at ±100,000 decimal exponents until this landed. It was removed, so `Parse`
 now refuses only a value whose binary exponent would not fit a `long`.
 
+## Long text, a slice at a time
+
+A short decimal parses in microseconds whatever its exponent, but the cost grows with the square
+of the number of digits: 30,000 digits take most of a second, and a million would take about a
+quarter of an hour. `StartParse` does the same work as `Parse` as a job you hold and step, by
+work or by time, and gives back the same bits:
+
+```csharp
+var job = ApFloat.StartParse(text, precision: 256);
+
+while (!job.Continue(TimeSpan.FromMilliseconds(50)))     // or job.Continue(100_000) units
+    Console.WriteLine($"{job.Progress:P0}");
+
+ApFloat x = job.Result;                    // what ApFloat.Parse(text, 256) gives
+DecimalCertificate c = job.Certificate;    // rounds, working bits, exact or not, Low <= value <= High
+```
+
+Work is counted in limb steps, so a budget of units means the same on any machine. The job
+machinery is `Natural.Jobs`, which knows nothing about numbers: any loop written as an iterator
+that yield-returns the work it just did can be a job.
+
 ## How it is tested
 
-506 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
+555 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
 with the thing under test:
 
 - **`BigInteger`**, converted through raw magnitude bytes so the arithmetic tests don't
@@ -188,7 +209,7 @@ result is computed exactly and rounded exactly once, at a precision you choose.
 ## Build
 
 ```
-dotnet test Natural.slnx                                        # 506 tests
+dotnet test Natural.slnx                                        # 555 tests
 dotnet run -c Release tests/bench/timing.cs                     # decimal text timings
 ```
 
@@ -206,7 +227,9 @@ src/Natural/            the library
   ApFloat.Ieee.cs       one encoder/decoder for any IeeeFormat
   ApFloat.Text.cs       decimal, hex and binary text
   ApFloat.Certified.cs  the certified interval engine
+  ApFloat.Jobs.cs       StartParse: a parse as a job, and its certificate
   IeeeFormat.cs         an IEEE format as (exponent bits, precision)
+  Jobs/Job.cs           Natural.Jobs: long work stepped by units or time
 tests/Natural.Tests/    xUnit, and the oracles
 tests/bench/            timing.cs, a file-based app
 Natural_Playground/     a WinForms calculator that takes results apart
@@ -214,8 +237,9 @@ Natural_Playground/     a WinForms calculator that takes results apart
 
 ## Status
 
-Arbitrary-precision integers and binary floats are implemented and tested. Not yet built,
-in the order they are planned: resumable jobs; the IEEE operations `ApFloat` still lacks
+Arbitrary-precision integers and binary floats are implemented and tested, and parsing runs as
+a resumable job. Not yet built, in the order they are planned: formatting as a job; the IEEE
+operations `ApFloat` still lacks
 (FMA, floor/ceiling/truncate/round, remainder, `ApInt` square root, `ApFloat.Sqrt`), with
 IEEE status flags landing before them; parsing into an `IeeeFormat`; `ApInt` bitwise
 operators then `Pow`/`ModPow`/`Gcd`; generic math interfaces; speed; transcendentals.

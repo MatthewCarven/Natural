@@ -468,3 +468,61 @@ Not changed, for Matthew: whether `space-bunny` goes to master (there's no local
 here, just `origin/master` at `f8fc52a`); the two Gemini branches (`Gemini`,
 `gemini-illuminatigame`, from the same scaffold commit: a different GUI and internal debug
 accessors on ApFloat, `RawMantissa` handing out the live array); and the Windows-only build.
+(Later the same day he merged `space-bunny` into master, deleted it, and asked for a license:
+MIT.)
+
+## 2026-10-09 — Session 5a: Natural.Jobs, and StartParse
+
+Matthew took both recommendations, asked with previews: a job you step, and the general piece
+in `Natural.Jobs` inside this project.
+
+**`Natural.Jobs`** (`src/Natural/Jobs/Job.cs`, nothing from the numbers). `Job.Start(body)` takes
+an iterator that does a slice of work, yield-returns the units it did, and sets
+`context.Result` (and `ExpectedWork`, for progress) before it ends. `Job<T>` has
+`Continue(units)` and `Continue(TimeSpan)` (each returns whether it's finished, and a budget is
+overrun by the last step only), `RunToEnd`, `Result`, `WorkDone`, `Steps`, `Progress` (never
+down, at most 0.99 until the end, exactly 1 after), `IsComplete` and `Dispose`.
+`Job<T, TCertificate>` adds `Certificate`. Nothing runs until the first Continue. A fault is
+rethrown on every later call; work that ends without its result (or certificate) is a fault;
+Continue from inside the work, or from two threads at once, is refused.
+
+**`ApFloat.StartParse(text, precision, mode, provider)`** returns `Job<ApFloat, DecimalCertificate>`.
+The syntax is checked at once (FormatException, or OverflowException for an exponent past a
+long); the arithmetic waits for Continue, and a value whose binary exponent overflows throws from
+Continue with Parse's message. Units are limb steps: the digit loop (`ApInt.DecimalDigitSteps`)
+counts `used + 2` a digit and yields every 4,096 or a little more (about 0.065 ms here); a round
+or the exact route counts an estimate from its sizes (`RoundUnits`, `ExactUnits`), so a budget
+means the same on any machine. `DecimalCertificate(Rounds, WorkingBits, Exact, Low, High)`: the
+last round's ends, signed, Low ≤ exact ≤ High, and both round to the result when the rounds
+settled it.
+
+**One implementation.** `Parse` drains the same steps (`DecimalParse.RunToEnd`), and the one-shot
+`TimesPowerOfTen` drains `TimesPowerOfTenSteps`, so a job and Parse can't disagree. The test
+hooks (`LastRounds`, `LastExact`) are set only by the one-shot calls. A job keeps its rounds in
+its certificate, and reads `ForcedRoute` when it starts, on the caller's thread.
+
+**Cost**, old build against new, alternating, three rounds each: long parses unchanged (30,000
+digits 0.74 s both ways). Short ones pay for a handful of small objects, about +0.18 µs: "0.1"
+within the noise, 20 digits 1.62 → 1.79 µs, "1.5e300" at 256 bits 0.66 → 0.84 µs. The first
+version cost twice that, because the progress estimate called the bitwise `FloorLog2Of5Times`
+up to three times per parse. Estimates now use |n|·2.321929.
+
+Measured on the way: below the cache, the exact route's restoring division keeps every quotient
+bit (about 93,000 for 30,000 digits at e-3000, to keep 53), but it's cheap next to the digit loop
+(0.91 s against 0.86 s at e0). `ExactUnits` was 60 times low there; corrected.
+
+**Tests**: 506 → 555. `JobTests` (15, counting jobs with no numbers). `ParseJobTests` (34): job =
+Parse for 300 limb-biased decimals in every mode at 8 precisions, with the certificate equal to
+the hooks; stepped one unit at a time (exactly one step per call, progress monotone and ≥ 0.9
+with the work done, against the oracle); budgets kept to the exact step end, learned from a
+stepped twin; 30,000 digits in 10 ms slices against the oracle; certificates bracket the exact
+value (150 past the cache); a tie goes to the exact route; a multi-round certificate's ends come
+from the last round, and progress between rounds says a bigger round is coming; the digit loop's
+count checked against BigInteger limb counts; threads; errors. The README's new sample was run
+as written.
+
+**Mutation check**: 23 mutations, all red in the end. Two survived at first and the tests were
+tightened: a job writing the test hooks (my test's second job happened to put them back) and
+progress ignoring the engine's next round (nothing looked between rounds). A resume that restarts
+from zero hung the suite instead of failing it, since tests loop until the job finishes; every
+such loop is capped now, and it goes red in 7 tests.

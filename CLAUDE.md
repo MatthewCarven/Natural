@@ -1,6 +1,7 @@
 # Natural — arbitrary-precision numbers, built from bits
 
-(Started as ADPDT, "Arbitrary Data Precision Data Type" — still the folder name.)
+(Started as ADPDT, "Arbitrary Data Precision Data Type". The folder was renamed Natural in
+October 2026, and Claude's memory for it moved with it.)
 
 A hand-built arbitrary-precision integer for C# (`Natural.ApInt`), where the
 arithmetic is done with **bitwise operations**, not by leaning on the CPU's add
@@ -44,13 +45,25 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   and hand over to the exact route once that's cheaper. Text's two cores (`FromDecimal`,
   `ScaledToInteger`) go through it, so `Parse` has no cap on decimal exponents: it refuses only
   a value whose binary exponent wouldn't fit a long. Test hooks: `ForcedRoute`, `LastRounds`,
-  `LastExact` (thread-static).
+  `LastExact` (thread-static). `TimesPowerOfTenSteps` is the engine as steps (one per round);
+  the one-shot `TimesPowerOfTen` drains it and sets the hooks.
+- `src/Natural/Jobs/Job.cs` — `Natural.Jobs`, knowing nothing of numbers: long work as a job the
+  caller steps by units or time (`Continue`), with `Progress`, `Result` and an optional
+  certificate. The work is an iterator that yield-returns the units it just did. Matthew wants
+  this reusable in other projects, so keep numbers out of it.
+- `src/Natural/ApFloat.Jobs.cs` — `StartParse`, a parse as a job, and `DecimalCertificate`.
+  `Parse` runs the same steps (`DecimalParse`: `ApInt.DecimalDigitSteps`, then the engine's),
+  so the two can't disagree. Units are limb steps: counted in the digit loop, estimated from
+  sizes for a round or the exact route. Estimates must stay cheap: a short parse pays for them.
 - `tests/Natural.Tests` — xUnit. `Oracle.cs` converts to/from `BigInteger` through
   raw magnitude bytes, so arithmetic tests don't depend on the text code.
   `FloatOracle.cs` is ApFloat's reference: exact rationals rounded by long division
   (no code shared with `RoundExact`), an IEEE encoder, and biased random bit patterns.
   The hardware (`double`, `float`, `Half`) is the second oracle. `CertifiedTests.cs` pins
   values for exponents like 10^7 that were computed offline with exact Python integers.
+  `JobTests.cs` checks `Natural.Jobs` on counting jobs; `ParseJobTests.cs` checks that a job
+  gives what `Parse` gives however it's stepped. Cap every `while (!job.Continue(...))` loop in
+  a test, or a resume that restarts hangs the suite instead of failing it.
 - `Natural_Playground/` — a WinForms calculator over ApFloat that takes the result apart
   (significand, exponent, ulp, every format, and a check against `double`). It's in the
   solution, so the solution builds on Windows only. `FloatReport` makes the text with no UI:

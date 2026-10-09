@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace Natural;
@@ -168,26 +170,60 @@ public readonly partial struct ApInt
         return Magnitude.Trim(mag);
     }
 
-    /// <summary>
-    /// Decimal: for each digit, acc = acc * 10 + digit, where acc * 10 is worked out
-    /// as (acc &lt;&lt; 3) + (acc &lt;&lt; 1) through the bitwise adder, in place.
-    /// </summary>
+    /// <summary>Decimal: the digit loop below, run to the end.</summary>
     private static uint[]? ParseDecimal(ReadOnlySpan<char> digits)
     {
-        if (!ValidDigitRun(digits)) return null;
+        if (!ValidDigitRun(digits) || digits.ContainsAnyExcept(DecimalDigitsAndUnderscore)) return null;
+        var result = new StrongBox<uint[]>();
+        foreach (long _ in DecimalDigitSteps(digits.ToString(), result)) { }
+        return result.Value;
+    }
 
+    private static readonly SearchValues<char> DecimalDigitsAndUnderscore = SearchValues.Create("0123456789_");
+
+    /// <summary>
+    /// The decimal digit loop, after at least this many limb steps of which it yields (a step
+    /// ends on a digit). About 0.06 ms of work here: fine-grained enough for a time budget,
+    /// and coarse enough that the yields cost nothing measurable.
+    /// </summary>
+    internal const int DigitStepUnits = 4096;
+
+    /// <summary>
+    /// Decimal digits to a magnitude, as steps a job can pause between: for each digit,
+    /// acc = acc * 10 + digit, where acc * 10 is worked out as (acc &lt;&lt; 3) + (acc &lt;&lt; 1)
+    /// through the bitwise adder, in place. A digit costs one limb step per limb of acc, plus
+    /// two; the steps yield those counts. <paramref name="digits"/> holds only decimal digits
+    /// and underscores, at least one digit. The magnitude is in <paramref name="result"/> when
+    /// the steps end.
+    /// </summary>
+    internal static IEnumerable<long> DecimalDigitSteps(string digits, StrongBox<uint[]> result)
+    {
         // Each decimal digit is log2(10) ~ 3.32 bits; 10/3 per digit overestimates safely.
         var acc = new uint[(long)digits.Length * 10 / 3 / 32 + 2];
         int used = 0;
+        long pending = 0;
 
-        foreach (char c in digits)
+        for (int i = 0; i < digits.Length; i++)
         {
+            char c = digits[i];
             if (c == '_') continue;
-            if (c < '0' || c > '9') return null;
+            pending += used + 2;
             used = TimesTenPlus(acc, used, (uint)(c & 0xF));   // '0'..'9' are 0x30..0x39: the low nibble is the digit
+            if (pending >= DigitStepUnits)
+            {
+                yield return pending;
+                pending = 0;
+            }
         }
-        return Magnitude.Trim(acc[..used]);
+        result.Value = Magnitude.Trim(acc[..used]);
+        if (pending > 0) yield return pending;
     }
+
+    /// <summary>
+    /// What <see cref="DecimalDigitSteps"/> will count for n digits, near enough: the limbs
+    /// grow by log2(10)/32 a digit, so the sum is about n²·log2(10)/64 + 2.5n.
+    /// </summary>
+    internal static long DecimalDigitUnits(long n) => (long)((Int128)n * n * 3322 / 64000) + 5 * n / 2;
 
     /// <summary>acc[0..used) = acc * 10 + digit, in place; returns the new used length.</summary>
     private static int TimesTenPlus(uint[] acc, int used, uint digit)

@@ -2,7 +2,9 @@
 
 ## Order of work (agreed with Matthew 2026-09-30)
 1. ~~**Session 4**: the certified interval engine.~~ Done 2026-09-30.
-2. **Session 5**: resumable jobs, built on 4. **Next**; brief below, proposed as 5a and 5b.
+2. **Session 5**: resumable jobs, built on 4. ~~5a (`Natural.Jobs`, `StartParse`)~~ done
+   2026-10-09. **Next: 5b** (`StartFormat`, resumable double dabble); brief below. Then 5c
+   (the exact route, resumable), which is small and rarely needed.
 3. **The IEEE operations ApFloat still lacks**: FMA, Floor/Ceiling/Truncate/Round, IEEE
    remainder, and `ApInt` integer square root, then `ApFloat.Sqrt`. The **IEEE status
    flags** go in first, in the same session, so each new operation reports them from day one.
@@ -161,14 +163,15 @@ Order: session 4 (engine), then 5 (jobs). Session 6's extras were split up on
       ±2.7 × 10^18). What's left that's slow is long input, and that's session 5's.
 - [ ] Long digit strings both ways are quadratic in their length: ApInt's decimal digit loop
       when parsing (30,000 digits: 0.75 s), and double dabble when printing (`F0` of 1e30000:
-      0.22 s). Session 5's jobs make them resumable; order item 7 (speed) would make them faster.
+      0.22 s). Session 5's jobs make them resumable (parsing: `StartParse`, done 2026-10-09;
+      printing: 5b); order item 7 (speed) would make them faster.
 
-### Session 5 — resumable jobs (brief for a fresh chat)
+### Session 5 — resumable jobs
 Goal: an opt-in reference mode whose work the caller holds, steps, pauses and resumes.
 `StartParse` / `StartFormat` return a job; `Continue(budget)` does up to that much work; then
-`Complete`, `Result`, `Progress` (0..1), and a certificate. The default `Parse` has no cap
+`IsComplete`, `Result`, `Progress` (0..1), and a certificate. The default `Parse` has no cap
 any more (decision 4, changed), so jobs are for long work, not for big exponents. The job
-machinery must be a general piece, not tied to parsing (Matthew's reuse aim below).
+machinery is a general piece, not tied to parsing (Matthew's reuse aim below).
 
 **Asked and answered (Matthew, 2026-10-09), both as recommended:**
 1. **A job you step.** `var job = ApFloat.StartParse(text, precision: 256);` then
@@ -179,75 +182,78 @@ machinery must be a general piece, not tied to parsing (Matthew's reuse aim belo
 2. **`Natural.Jobs`, in this project**: one file, its own namespace, nothing from the numbers,
    so it can move to its own project later with no change to callers.
 
-Build notes from 2026-10-09 (nothing written yet; the baseline re-measured the same as below):
-`Job<T>` plus `Job<T, TCertificate>` for the certificate; the body is an iterator over a
-`JobContext` that sets `Result` and `ExpectedWork`; `Continue` stops after the step that crosses
-the budget; a fault is rethrown on every later call; `IDisposable`. On the numbers side: the
-decimal digit loop yields every 4,096 limb steps (a step ends on a digit), and
-`TimesPowerOfTen` becomes an iterator that yields per round, with the one-shot `Parse` draining
-the same steps (measure short-parse overhead against the old build, A B A B). Syntax errors
-throw from `StartParse`; an exponent overflow inside the job throws `Parse`'s message.
+#### 5a — done 2026-10-09
+- [x] `Natural.Jobs` (`src/Natural/Jobs/Job.cs`, nothing from the numbers): `Job.Start(body)`,
+      where the body is an iterator that yield-returns the units it just did and sets
+      `context.Result` (and `ExpectedWork`). `Job<T>`: `Continue(units)`, `Continue(TimeSpan)`,
+      `RunToEnd`, `Result`, `WorkDone`, `Steps`, `Progress`, `IsComplete`, `Dispose`.
+      `Job<T, TCertificate>` adds `Certificate`.
+- [x] `ApFloat.StartParse(text, precision, mode, provider)` → `Job<ApFloat, DecimalCertificate>`.
+      `Parse` runs the same steps to the end. Units are limb steps: the digit loop counts them
+      (4,096 a step, about 0.065 ms); an interval round or the exact route counts an estimate
+      from its sizes.
+- [x] 506 → 555 tests; 23 mutations, all red (two only after the tests were tightened).
+      Short parses pay about 0.18 µs for the steps. Details in WORKLOG.
 
-What actually takes time now (Release, measured 2026-09-30, by `tests/bench/timing.cs`; run it
-first as the baseline, and remember this machine's two speeds: its interval timings came in
-0.2 ms one hour and 0.5 ms the next), so what a job must be able to pause:
-- Long digit strings in: ApInt's decimal loop (x·10 + d per digit) is quadratic. 30,000 digits
-  take 0.75 s, so a million would take about 15 minutes.
-- Long digit strings out: double dabble, one pass per bit. `F0` of 1e30000 takes 0.22 s.
-- Ties and exact values with a huge exponent: the exact route (5^n in full, then a multiply
-  or a restoring division). These only come from long inputs.
-- A long input a hair from a boundary: engine rounds at W of about 3.3 bits per digit.
-Short inputs finish in milliseconds and don't need a job.
+#### 5b — brief for a fresh chat: `StartFormat`, and double dabble as steps
+Goal: `x.StartFormat(format, provider, mode)`, a job giving exactly `x.ToString(format,
+provider, mode)`. Same shape as `StartParse` (Matthew's answers above cover it: a job you step,
+in `Natural.Jobs`), so no new question unless the certificate's meaning needs one (below).
 
-Recommended design (a proposal to confirm, not settled):
-- **Iterators as the resumable form.** Write each long loop as a C# iterator that
-  `yield return`s the work it just did (`IEnumerable<long>`). The compiler keeps the loop's
-  state (the bit index, the arrays), so resumable code reads like the one-shot code. The job
-  driver pulls from the iterator until the budget is spent. Measure the overhead first. If it
-  costs the everyday path, keep the one-shot loops as they are and test the two against each
-  other.
-- **Work units**: one unit per limb-sized step (a FullAdd over one limb, or one division
-  step), counted where the loops yield, so it's identical on any machine. A time budget
-  checks a `Stopwatch` every few thousand units (decision 2: both, units underneath).
-- **Generic core** (Matthew's reuse aim): `Job<T>` with `Continue(long units)`,
-  `Continue(TimeSpan)`, `Complete`, `Result`, `Progress`, `WorkDone`, over any
-  `IEnumerable<long>` plus a result. Numbers are just its first user. In its own file, and
-  possibly a namespace (`Natural.Jobs`).
-- **Progress**: the digit loops and the exact route know their total work up front (from
-  lengths and bit lengths). The engine's rounds grow 4× each (W doubles, cost ~W²), so
-  estimate from the current round.
-- **Certificate**: rounds taken, the final W, the two interval ends, and whether the exact
-  route finished it.
-- **Entry points**: `ApFloat.StartParse(text, precision, mode, provider)` and
-  `x.StartFormat(format, provider, mode)`. `Parse` and `ToString` stay one-shot; ideally they
-  run the same steps to completion, so the two can't disagree.
-- Cancelling is just not calling `Continue` again. Maybe add a `CancellationToken` overload.
+Where formatting's time goes (Release, 2026-10-09): `F0`/`F4` of 1e30000 takes 0.23 s, of
+1e100000 2.5 s, of 1e200000 10 s. Nearly all of it is **double dabble** (`ApInt.ToDecimalDigits`,
+two passes over the BCD words per bit, so quadratic). `ScaledToInteger` for F is linear: it
+scales by a few decimals, inside the cache. E/G/R on a huge exponent go through the engine and
+take milliseconds; E with very many digits (E100000) pays double dabble again.
 
-**Proposed split** (it's big): **5a** is the generic `Job<T>`, the resumable decimal digit
-loop, and `StartParse`, with the engine's rounds as whole steps. **5b** is
-the resumable exact route (multiply and divide loops, 5^n), `StartFormat` with resumable
-double dabble, and progress estimates for the engine.
+Plan, by analogy with 5a's code:
+- `ApInt.DecimalStringSteps(mag, StrongBox<string>)`: double dabble as an iterator, counting
+  `2·used + 1` limb steps a bit, yielding every `DigitStepUnits` or so (a step ends on a bit).
+  `ToDecimalDigits` drains it. Measure short `ToString` (ApInt and ApFloat) against a copy of
+  the old build, alternating A B A B: in 5a, estimates that called the bitwise
+  `FloorLog2Of5Times` doubled a short parse's cost until replaced by |n|·2.321929.
+- `ScaledToIntegerSteps`, as `FromDecimalSteps` is to `FromDecimal`, through
+  `TimesPowerOfTenSteps` (one step per round; the exact route stays one whole step until 5c).
+- The formats call `ScaledToInteger` more than once (`DecimalExponent` loops, `SignificantDigits`,
+  `Shortest`'s binary search with a `FromDecimal` per candidate). Write the step versions of the
+  ones that print many digits (F, E, G, custom); `Shortest`, B, A and X can be one whole step
+  (Shortest prints at most `DecimalDigitsFor(p)` digits; B, A and X are linear).
+- `ToString` should drain the same steps, as `Parse` does, so the two can't disagree.
+- Output that can't exist (F0 of 1e(10^18): more digits than a string holds) should throw at
+  `StartFormat`, from an estimate of the length, rather than after a long time.
+- The certificate: the pinning of the digits printed (the last `ScaledToInteger`), as a
+  `DecimalCertificate` on |x| × 10^t. Decide whether that's clear enough or needs its own type;
+  ask Matthew only if it changes what he sees.
 
-Things to get right:
+Tests: as 5a's (`ParseJobTests` is the model): a job = `ToString` for random values in every
+format, mode and precision; stepped one unit at a time; budgets to the exact step end; progress
+monotone and ≥ 0.9 at the end; `F0` of 1e30000 in slices against `BigInteger`; double dabble's
+own count checked independently. Cap every `while (!Continue(...))` loop in tests, or a
+resume that restarts hangs the suite instead of failing it. Mutations: double dabble restarting
+from the top bit on resume; a BCD word lost across a yield (`used` not kept); a step boundary
+off by one; StartFormat and ToString disagreeing for one format; progress from the wrong total.
+
+#### 5c — the exact route as steps (small; rarely needed)
+`Magnitude.Multiply`, `DivRem` and `PowerOfFive` past the cache as iterators, yielding between
+whole row additions or whole quotient bits (so no carry crosses a yield), replacing the exact
+route's one estimated step with counted ones. It runs for ties and exact values, and below the
+engine's crossover (10^±4096 at up to ~1,100 bits of precision). Measured 2026-10-09, it's cheap
+next to the digit loop: a 30,000-digit parse takes 0.86 s at e0, 0.91 s at e-3000 (a division
+keeping all ~93,000 quotient bits) and 0.91 s at e3000. So it's worth doing only for
+completeness. Mutations: a row added twice or skipped on resume; a quotient bit lost across a
+yield.
+
+Things to get right (all three):
 - The thread-static test hooks (`LastRounds`, `LastExact`) mustn't carry a job's state: a job
-  may be continued on another thread. Keep a job's round count in the job.
+  may be continued on another thread. A job reads `ForcedRoute` when it starts, on the caller's
+  thread, and keeps its rounds in its certificate (5a does this).
 - A job's result must be bit-identical to the one-shot result. There's one rounding point
   (`RoundExact` / `RoundToFormat`), and the job reaches it by the same route.
 - `Continue(n)` may overshoot n by at most one step. Document the step size.
 - Memory: a job holds its arrays for as long as the caller holds the job (decision 3: in
   memory; disk checkpoints are not agreed).
-
-Tests:
-- A job equals the one-shot `Parse`/`ToString` for random inputs in every mode, including when
-  stepped one unit at a time.
-- The budget is honoured (work done is at most budget + one step). `Progress` never goes down
-  and ends at 1. `Complete` is false until the result exists.
-- Long inputs (100,000 digits) stepped to completion, against the oracle.
-- The certificate's two ends bracket the exact value (use the rational oracle).
-- Time budgets roughly honoured, but not asserted tightly (this machine has two speeds).
-- Mutation plan: a resume that restarts a loop from 0; a `Continue` that ignores its budget;
-  `Complete` set one step early; a carry lost across a yield in a resumable multiply;
-  `Progress` computed from the wrong total.
+- Not built, on purpose: `RunAsync` (it can go on top later) and a `CancellationToken`
+  overload (stopping is not calling Continue again).
 
 Matthew, 2026-09-30, on reuse: he expects this structure to turn up in other projects "where
 we need bigger numbers to put a cap on possibilities" and "must be able to iterate across

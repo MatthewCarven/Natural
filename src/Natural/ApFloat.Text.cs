@@ -484,6 +484,7 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     /// 10^±14,400 at 4096 bits. The result is the same either way; only the cost differs. The
     /// time also follows the length of the text: a 30,000-digit decimal takes most of a second.
     /// (There was a cap at ±100,000 until the engine came in; Matthew dropped it on 2026-09-30.)
+    /// For long text, <see cref="StartParse"/> does the same work a slice at a time.
     /// </summary>
     /// <exception cref="FormatException">It isn't a number.</exception>
     /// <exception cref="OverflowException">The value's binary exponent wouldn't fit a long.</exception>
@@ -491,9 +492,14 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         ParseCore(s, precision, mode, provider, out ApFloat result) switch
         {
             ParseOutcome.Parsed => result,
-            ParseOutcome.TooLarge => throw new OverflowException($"\"{s}\": the exponent is too large (the value's binary exponent must fit a long)."),
-            _ => throw new FormatException($"Not a number: \"{s}\"."),
+            ParseOutcome.TooLarge => throw TooLarge(s),
+            _ => throw NotANumber(s),
         };
+
+    private static OverflowException TooLarge(string? s, Exception? inner = null) =>
+        new($"\"{s}\": the exponent is too large (the value's binary exponent must fit a long).", inner);
+
+    private static FormatException NotANumber(string? s) => new($"Not a number: \"{s}\".");
 
     public static bool TryParse([NotNullWhen(true)] string? s, out ApFloat result) =>
         TryParse(s, DefaultPrecision, RoundingMode.ToNearestEven, null, out result);
@@ -508,8 +514,31 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
 
     private static ParseOutcome ParseCore(string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result)
     {
+        ParseOutcome outcome = PrepareParse(s, precision, mode, provider, out result, out DecimalParse? work);
+        if (outcome != ParseOutcome.Parsed || work is null) return outcome;
+        try
+        {
+            result = work.RunToEnd();
+            return ParseOutcome.Parsed;
+        }
+        catch (OverflowException)
+        {
+            return ParseOutcome.TooLarge;   // a value whose binary exponent wouldn't fit a long
+        }
+    }
+
+    /// <summary>
+    /// All of a parse but the decimal arithmetic: the syntax, the special values, and hex and
+    /// binary (whose cost is linear). For decimal text, <paramref name="work"/> is the rest, to
+    /// run to the end or a slice at a time; otherwise it's null and <paramref name="result"/>
+    /// is the answer.
+    /// </summary>
+    private static ParseOutcome PrepareParse(string? s, int precision, RoundingMode mode, IFormatProvider? provider,
+                                             out ApFloat result, out DecimalParse? work)
+    {
         CheckPrecision(precision);
         result = default;
+        work = null;
         if (s is null) return ParseOutcome.NotANumber;
         NumberFormatInfo nfi = NumberFormatInfo.GetInstance(provider);
         ReadOnlySpan<char> span = s.AsSpan().Trim();
@@ -545,7 +574,7 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
                 return ParsePowerOfTwoRadix(span[2..], 4, negative, precision, mode, out result);
             if (span.Length > 2 && span[0] == '0' && span[1] is 'b' or 'B')
                 return ParsePowerOfTwoRadix(span[2..], 1, negative, precision, mode, out result);
-            return ParseDecimal(span, negative, precision, mode, nfi, out result);
+            return ScanDecimal(span, negative, precision, mode, nfi, out work);
         }
         catch (OverflowException)
         {
@@ -560,11 +589,14 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         return false;
     }
 
-    /// <summary>digits [separator digits] [e [sign] digits]: the exact rational digits × 10^exp, rounded once.</summary>
-    private static ParseOutcome ParseDecimal(ReadOnlySpan<char> span, bool negative, int precision, RoundingMode mode,
-                                             NumberFormatInfo nfi, out ApFloat result)
+    /// <summary>
+    /// digits [separator digits] [e [sign] digits]: the syntax, and the work of making the exact
+    /// rational digits × 10^exp and rounding it once.
+    /// </summary>
+    private static ParseOutcome ScanDecimal(ReadOnlySpan<char> span, bool negative, int precision, RoundingMode mode,
+                                            NumberFormatInfo nfi, out DecimalParse? work)
     {
-        result = default;
+        work = null;
         int e = span.IndexOfAny('e', 'E');
         ReadOnlySpan<char> mantissa = e < 0 ? span : span[..e];
         long exponent = 0;
@@ -577,10 +609,10 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         if (whole.Length + fraction.Length == 0) return ParseOutcome.NotANumber;
         if (!DigitRun(whole, 10, allowEmpty: true) || !DigitRun(fraction, 10, allowEmpty: true)) return ParseOutcome.NotANumber;
 
+        // At least one digit, and underscores only between digits: what the digit loop takes.
         string digits = string.Concat(whole, fraction);
-        ApInt d = ApInt.Parse(digits.Length == 0 ? "0" : digits);
         long n = checked(exponent - (fraction.Length - fraction.Count('_')));
-        result = FromDecimal(negative, d.Limbs, n, precision, mode);
+        work = new DecimalParse(negative, digits, n, precision, mode, ForcedRoute);
         return ParseOutcome.Parsed;
     }
 
@@ -649,10 +681,16 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     private static ApFloat FromDecimal(bool negative, uint[] q, long s, int precision, RoundingMode mode)
     {
         if (q.Length == 0) return ZeroOf(negative, precision);
-        return TimesPowerOfTen(q, 0, s, (long)precision + GuardBits,
-            (mag, exp) => RoundExact(negative, mag, exp, false, precision, mode),
-            () => FromDecimalExact(negative, q, s, precision, mode));
+        var pinning = new Pinning();
+        return RunToEnd(FromDecimalSteps(negative, q, s, precision, mode, ForcedRoute, pinning), pinning);
     }
+
+    /// <summary>FromDecimal as steps, for q non-zero: the first round has the precision and the guard bits.</summary>
+    private static IEnumerable<long> FromDecimalSteps(bool negative, uint[] q, long s, int precision, RoundingMode mode,
+                                                      Route route, Pinning pinning) =>
+        TimesPowerOfTenSteps(q, 0, s, (long)precision + GuardBits,
+            (mag, exp) => RoundExact(negative, mag, exp, false, precision, mode),
+            () => FromDecimalExact(negative, q, s, precision, mode), route, pinning);
 
     /// <summary>
     /// FromDecimal the exact way: the exact rational, rounded once. For s &gt;= 0 that's the
