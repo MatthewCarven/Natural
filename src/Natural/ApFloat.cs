@@ -293,6 +293,17 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
             if (inexact) flags |= IeeeFlags.Inexact;
             return result;
         }
+
+        /// <summary>Rounds into the target, without flags.</summary>
+        public ApFloat Round(bool negative, uint[] mag, long exp, bool sticky, RoundingMode mode)
+        {
+            IeeeFlags ignored = IeeeFlags.None;
+            return Round(negative, mag, exp, sticky, mode, ref ignored);
+        }
+
+        /// <summary>Where a non-zero value falls against a format's range (see RangeOf); always None for a precision.</summary>
+        public IeeeFlags RangeOf(bool negative, uint[] mag, long exp, RoundingMode mode) =>
+            Format is { } format ? ApFloat.RangeOf(negative, mag, exp, format, mode) : IeeeFlags.None;
     }
 
     // The operations, with IEEE's flags raised in `flags` (IeeeContext's way in), and without.

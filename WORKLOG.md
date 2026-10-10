@@ -725,3 +725,93 @@ sticky (I added the stickiness check before the battery, once I saw nothing test
 every rounding boundary falls on a whole unit of the root, so none lies strictly between root
 and root + 1, where the true value is. p + 2 is one bit of slack, kept to match `Divide`, whose
 p + 2 is the same slack. The machine was in its fast phase (12 s a run).
+
+## 2026-10-11 — Session 7: parsing straight into an IEEE format
+
+Matthew answered the brief's questions in one round, all as recommended:
+- **Shape**: static `Parse`/`TryParse(s, IeeeFormat, mode, provider)` with no flags, plus
+  `ieee.Parse(s)` with them.
+- **Huge exponents**: in a format, an exponent past a long saturates, as `double.Parse` does; with a
+  precision it still throws.
+- **Jobs**: `StartParse(s, IeeeFormat, mode)` too.
+
+Measured before asking. Today's route, `Parse(s, 53).WithFormat(Binary64)`, gives 2·2^-1074 for
+text just above 5·2^-1075, where `double.Parse` gives 3·2^-1074: the double rounding is real.
+1e±10^18 cost 5.9 ms at 53 bits.
+
+**Found reading the engine, not in the brief: its acceptance has to agree on the range.** Two
+interval ends that round to the same format value can still differ on tininess (just under 2^emin,
+one is tiny at the precision and the other rounds up out of it) or on overflow (toward zero, both
+give the largest finite value, one by overflowing). The flags hang on that. So in a format,
+`TimesPowerOfTenSteps` takes a `range` callback, `RangeOf`, which judges tiny and overflow as
+`RoundToFormat` does. A round settles only when the ends agree on the value *and* the range. Both
+are roundings, so monotone, and agreeing ends settle them for every value between.
+
+**The pieces**:
+- Parsing goes to an `ApFloat.Target` instead of a precision, all the way down: `PrepareParse`,
+  `ScanDecimal`, the hex/binary path, `DecimalParse`, `FromDecimalSteps` and `FromDecimalExact`
+  all end in `target.Round`. Formatting's read-back goes through the same pieces at x's precision,
+  unchanged.
+- **Inexact on the engine route** comes from the digits, since the interval can't say whether the
+  text was exact. `IsExactly(r, q, s)`: with q = Q·2^t (Q odd), r must have exponent s + t and odd
+  part Q·5^s (or Q/5^-s), and the exponent and bit lengths reject nearly everything before any
+  multiply. The exact route's flags come straight from its rounding.
+- **Settling early** (`SettlesEarly`): with D significant digits, 10^(D−1+n) ≤ |value| < 10^(D+n).
+  3.321 is under log2 10, so far past 2^(emax+1) it overflows and under half the smallest subnormal
+  it rounds as anything there does. Either way it's rounded as a one-bit stand-in to get the mode's
+  answer and the flags. Zero text is zero. 1e±10^18 into binary64 went from 5.9 ms to under a
+  microsecond. An exponent past a long comes back from `ParseExponent` as long's limit on its side,
+  so it settles the same way. Hex exponents are clamped to ±2^62, which every format's range sits
+  well inside.
+- `ieee.Parse(s, provider)` raises Inexact, Overflow, Underflow; NaN and infinity raise nothing; a
+  failed parse throws and leaves the flags alone.
+
+**Old against new** (the recipe, alternated three times, best of five each): parsing 2000 short
+texts at 53 bits took 15.5–16.3 ms on both builds, and 41 ms at 256 bits on both; "R" of 2000
+doubles took 216–224 ms on both; 1e100000 took 0.18–0.19 ms on both; 3001 digits took 13.2–13.5 ms
+on both. No cost to the precision path.
+
+**Tests**: 630 → 643, `ParseFormatTests` (13). They cover:
+- `double.Parse` bit for bit on 9,000 texts: "R"/"E16"/"E25"/"G17" of biased doubles, midpoints
+  between neighbours written out in full and a hair either side, and random digit strings.
+- `float.Parse` on 9,000, and `Half.Parse` on 6,000. It agreed with the oracle everywhere, as
+  expected, since it shares double's parsing code.
+- Every mode in eight formats, binary128 and three 6-bit ones included: `EncodeRational` for the
+  bits, `RoundingFlags` for the flags, the static result equal to the context's.
+- Every midpoint of three 6-bit formats, exactly and a hair either side.
+- The engine forced on at three boundaries where neighbouring texts share a value but not their
+  flags: 2^-1022 − 2^-1076 to nearest, 2^-1022 − 2^-1075 rounding up, and 2^1024 toward zero. The
+  nudges run from 10^-20 of a digit (the first round settles it) to 10^-60 (its interval straddles
+  the edge), both signs, against the oracle and the exact route.
+- Exact texts settled by the engine (10^4200 × 10^-4200 is 1, with no flag, and `LastExact` false),
+  and 10^4096 exact in a 10,000-bit format.
+- Saturation for both signs in every mode, including zero mantissas, hex past a long, and the
+  precision path still throwing.
+- Hex and binary text into formats against the oracle; the context (sticky, its mode, a failed parse
+  raising nothing); `StartParse` into a format against `Parse`, the engine included.
+
+The first version of the mode test took 1 min 42 s. Binary128's midpoints written out in full run
+to thousands of digits, and the parse is quadratic in the digits, so binary128 keeps only short
+random texts (which still reach the engine past 10^±4096, near both edges) and the class runs in
+about 12 s.
+
+**Mutation check**: 21 mutations, 20 red at first, and **one survivor, which was a real hole: the
+context's `Parse` not sticky.** My "sticky" check parsed "1e-400" after "0.1", but "1e-400" raises
+Inexact by itself, so the expected flags came out the same either way. The test now follows with an
+exact parse ("0.5") and an overflow, so only stickiness explains the result, and the mutation went
+red. Red from the start:
+- the engine ignoring the range, or getting no range callback;
+- `RangeOf` never rounding at the edges, or judging tininess before rounding;
+- the engine's ends rounded to the precision rather than into the format. At first only the
+  forced-route tests caught that: binary128's subnormals are 34 of its 9,900 decades, so random
+  texts rarely land there. Half the random texts now crowd each format's edges, and the default
+  route catches it too.
+- settled results always inexact, `IsExactly` forgetting the trailing zeros or with a one-sided
+  length test, settled Underflow or Overflow not raised, the exact route's flags lost;
+- the exact route rounding twice (precision, then format), hex skipping the format;
+- the early-out margins too loose either way, an early zero losing its sign, an exponent past a
+  long throwing in a format;
+- the context ignoring its mode, and `StartParse` or the static `Parse` into a format using only
+  its precision.
+
+The fast phase held (13–19 s a run).

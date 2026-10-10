@@ -26,10 +26,24 @@ public readonly partial struct ApFloat
     /// exponent wouldn't fit a long throws from Continue instead, as it would from Parse.</exception>
     public static Job<ApFloat, DecimalCertificate> StartParse(string s, int precision = DefaultPrecision,
                                                               RoundingMode mode = RoundingMode.ToNearestEven,
-                                                              IFormatProvider? provider = null)
+                                                              IFormatProvider? provider = null) =>
+        StartParse(s ?? throw new ArgumentNullException(nameof(s)), Target.Of(precision), mode, provider);
+
+    /// <summary>
+    /// <see cref="Parse(string, IeeeFormat, RoundingMode, IFormatProvider?)"/> as a job: rounded
+    /// once into the format, the same result bit for bit, a slice at a time. Text a format
+    /// settles from the digits alone (zero, or far out of range) needs no steps.
+    /// </summary>
+    /// <exception cref="FormatException">It isn't a number.</exception>
+    public static Job<ApFloat, DecimalCertificate> StartParse(string s, IeeeFormat format,
+                                                              RoundingMode mode = RoundingMode.ToNearestEven,
+                                                              IFormatProvider? provider = null) =>
+        StartParse(s ?? throw new ArgumentNullException(nameof(s)), Target.Of(format), mode, provider);
+
+    private static Job<ApFloat, DecimalCertificate> StartParse(string s, Target target, RoundingMode mode, IFormatProvider? provider)
     {
-        ArgumentNullException.ThrowIfNull(s);
-        ParseOutcome outcome = PrepareParse(s, precision, mode, provider, out ApFloat result, out DecimalParse? work);
+        IeeeFlags ignored = IeeeFlags.None;
+        ParseOutcome outcome = PrepareParse(s, target, mode, provider, out ApFloat result, out DecimalParse? work, ref ignored);
         if (outcome == ParseOutcome.TooLarge) throw TooLarge(s);
         if (outcome != ParseOutcome.Parsed) throw NotANumber(s);
         return work is null
@@ -112,7 +126,7 @@ public readonly partial struct ApFloat
         private readonly bool _negative;
         private readonly string _digits;
         private readonly long _scale;
-        private readonly int _precision;
+        private readonly Target _target;
         private readonly RoundingMode _mode;
         private readonly Route _route;
         private readonly Pinning _pinning = new();
@@ -120,15 +134,18 @@ public readonly partial struct ApFloat
 
         /// <param name="digits">Decimal digits and underscores, at least one digit.</param>
         /// <param name="route">The test hook, read by the caller: the steps may run on another thread.</param>
-        public DecimalParse(bool negative, string digits, long scale, int precision, RoundingMode mode, Route route)
+        public DecimalParse(bool negative, string digits, long scale, Target target, RoundingMode mode, Route route)
         {
-            (_negative, _digits, _scale, _precision, _mode, _route) = (negative, digits, scale, precision, mode, route);
+            (_negative, _digits, _scale, _target, _mode, _route) = (negative, digits, scale, target, mode, route);
             long count = digits.Length - digits.AsSpan().Count('_');
             long bitsAtMost = count * 3322 / 1000 + 1;   // log2(10) is 3.3219...
-            ExpectedWork = ApInt.DecimalDigitUnits(count) + FirstStepUnits(bitsAtMost, scale, (long)precision + GuardBits, route);
+            ExpectedWork = ApInt.DecimalDigitUnits(count) + FirstStepUnits(bitsAtMost, scale, (long)target.Precision + GuardBits, route);
         }
 
         public ApFloat Result { get; private set; }
+
+        /// <summary>The flags rounding the text raised: Inexact, and in a format Overflow or Underflow.</summary>
+        public IeeeFlags Flags { get; private set; }
 
         public long WorkDone { get; private set; }
 
@@ -147,20 +164,21 @@ public readonly partial struct ApFloat
             uint[] digits = q.Value!;
             if (digits.Length == 0)
             {
-                Result = ZeroOf(_negative, _precision);
+                Result = ZeroOf(_negative, _target.Precision);
                 ExpectedWork = WorkDone;
                 yield break;
             }
 
             _pinned = true;
-            ExpectedWork = WorkDone + FirstStepUnits(Magnitude.BitLength(digits), _scale, (long)_precision + GuardBits, _route);
-            foreach (long units in FromDecimalSteps(_negative, digits, _scale, _precision, _mode, _route, _pinning))
+            ExpectedWork = WorkDone + FirstStepUnits(Magnitude.BitLength(digits), _scale, (long)_target.Precision + GuardBits, _route);
+            foreach (long units in FromDecimalSteps(_negative, digits, _scale, _target, _mode, _route, _pinning))
             {
                 WorkDone += units;
                 ExpectedWork = WorkDone + _pinning.NextUnits;
                 yield return units;
             }
             Result = _pinning.Result;
+            Flags = _pinning.Exact ? _pinning.Flags : SettledFlags(Result, digits, _scale, _pinning.Range);
         }
 
         /// <summary>All the steps, on this thread, leaving the rounds and the route in the test hooks as Parse always has.</summary>

@@ -102,6 +102,23 @@ public sealed class IeeeContext
         return r;
     }
 
+    /// <summary>
+    /// Text rounded once into the target, in the context's <see cref="Mode"/>: IEEE's
+    /// convertFromDecimalCharacter (and hex and binary text too). Raises Inexact, and in a format
+    /// Overflow or Underflow. NaN and infinity raise nothing. In a format an exponent past a long
+    /// saturates, as with double.Parse; with a precision it throws. Text that isn't a number throws,
+    /// and leaves the flags alone.
+    /// </summary>
+    /// <exception cref="FormatException">It isn't a number.</exception>
+    /// <exception cref="OverflowException">With a precision: the value's binary exponent wouldn't fit a long.</exception>
+    public ApFloat Parse(string s, IFormatProvider? provider = null)
+    {
+        IeeeFlags flags = Flags;
+        ApFloat r = ApFloat.Parse(s, _target, _mode, provider, ref flags);
+        Flags = flags;
+        return r;
+    }
+
     /// <summary>a × b + c, rounded once into the target. Invalid for 0 × ∞, and for ∞ × y + ∞ of the other sign.</summary>
     public ApFloat FusedMultiplyAdd(ApFloat a, ApFloat b, ApFloat c)
     {

@@ -41,6 +41,7 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   the static methods pass a throwaway. Inexact comes from `RoundExact`; overflow and underflow
   from `RoundToFormat` (tiny judged after rounding, as x86); invalid and divide-by-zero from
   the operations' special cases. New operations go on both the static API and the context.
+  `ieee.Parse(s)` is convertFromDecimalCharacter (hex and binary text too).
   The context's `Convert(x)` is IEEE's convertFormat (it was `Round` for a day, until
   `ApFloat.Round` came to mean rounding to an integer); `RoundToIntegral(x)` is
   roundToIntegralExact, in the context's mode, raising Inexact.
@@ -57,12 +58,19 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   carries (`DecimalDigitsFor(p)`, 17 for 53 bits), so a column lines up (Matthew's choice).
   Output starts from the exact value (m × 5^k / 10^k) and rounds once through `RoundExact`,
   ties to even (not .NET's away-from-zero). Parse builds digits × 10^exp exactly and rounds
-  once. Powers of five are cached below 5^4096. Formatting is `DecimalFormat`: each format is
+  once. Powers of five are cached below 5^4096. Parsing goes to a `Target` (a precision, or an
+  `IeeeFormat` since session 7, rounded once straight into it, as double.Parse does). In a format,
+  text far out of range is settled from its digit count and exponent (`SettlesEarly`), and an
+  exponent past a long saturates (Matthew's choice); with a precision it throws. Inexact for a
+  result the engine settled comes from the digits (`IsExactly`), since the interval can't say.
+  Formatting is `DecimalFormat`: each format is
   an iterator over stages (`Scaled`, `ReadBack`, `Digits`), and `ToString` runs it to the end.
 - `src/Natural/ApFloat.Certified.cs` — the certified interval engine (Ziv's strategy), for
   X × 10^n past the cache: bounds on 5^n by square-and-multiply with directed rounding, both
   ends rounded to the target, accepted when they agree; otherwise double the working bits,
-  and hand over to the exact route once that's cheaper. Text's two cores (`FromDecimal`,
+  and hand over to the exact route once that's cheaper. In a format the ends must also agree on
+  `RangeOf` (tiny, overflowing, or neither): two ends can round to the same value and still
+  differ there, and Underflow and Overflow hang on it. Text's two cores (`FromDecimal`,
   `ScaledToInteger`) go through it, so `Parse` has no cap on decimal exponents: it refuses only
   a value whose binary exponent wouldn't fit a long. Test hooks: `ForcedRoute`, `LastRounds`,
   `LastExact` (thread-static). `TimesPowerOfTenSteps` is the engine as steps (one per round);
@@ -71,7 +79,7 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   caller steps by units or time (`Continue`), with `Progress`, `Result` and an optional
   certificate. The work is an iterator that yield-returns the units it just did. Matthew wants
   this reusable in other projects, so keep numbers out of it.
-- `src/Natural/ApFloat.Jobs.cs` — `StartParse` and `StartFormat`, a parse or a format as a
+- `src/Natural/ApFloat.Jobs.cs` — `StartParse` (to a precision or into a format) and `StartFormat`, a parse or a format as a
   job, and `DecimalCertificate` (with `Scale` for a format). `Parse` and `ToString` run the same
   steps (`DecimalParse`, `DecimalFormat`), so a job and the one-shot call can't disagree. Units
   are limb steps: counted in the digit loop and in double dabble (`ApInt.DecimalStringSteps`),
@@ -94,6 +102,11 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   the float root against `Math.Sqrt`, `MathF.Sqrt` and every `Half`. In every mode and format it
   uses `FloatOracle.SqrtOf`, a rational that rounds exactly as the irrational root does. A
   squaring check (x between the squared rounding boundaries around the result) takes no root at all.
+  `ParseFormatTests.cs` checks parsing into a format against `double.Parse`, `float.Parse` and
+  `Half.Parse` bit for bit, and against the text's exact rational (`EncodeRational`,
+  `RoundingFlags`) in every mode and format. Its texts include midpoints written out in full and a
+  hair either side. It forces the engine on where its ends must agree on tininess or overflow.
+  Midpoints of binary128 run to thousands of digits; keep them out of random loops (1 m 42 s).
   `JobTests.cs` checks `Natural.Jobs` on counting jobs; `ParseJobTests.cs` and
   `FormatJobTests.cs` check that a job gives what `Parse`/`ToString` gives however it's stepped,
   and that progress tracks the work. Cap every `while (!job.Continue(...))` loop in a test, or a

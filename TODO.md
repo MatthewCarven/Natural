@@ -11,9 +11,10 @@
    flags** go in first, in the same session, so each new operation reports them from day one.~~
    Done: 6a (the flags, `IeeeContext`) 2026-10-10; 6b (FMA, rounding to integral, remainder)
    and 6c (square roots) 2026-10-11.
-4. **Parse into an `IeeeFormat`**: small, and for very wide formats it uses 4's engine.
-   **Next: session 7**; brief below, after session 6.
+4. ~~**Parse into an `IeeeFormat`**: small, and for very wide formats it uses 4's engine.~~
+   Done: session 7, 2026-10-11.
 5. **`ApInt` bitwise operators** (`&`, `|`, `^`, `~`), then `Pow`, `ModPow`, `Gcd`.
+   **Next: session 8**; brief below, after session 7.
 6. **Generic math**: `INumber<ApInt>` / `IBinaryInteger<ApInt>` (needs 5), `INumber<ApFloat>`
    (needs 3).
 7. **Speed**: Karatsuba plus a dedicated squaring, and a bit-parallel adder, all still
@@ -351,7 +352,16 @@ Pitfalls to expect: signed zeros (√−0 = −0; FMA's zero sign rules); FMA wh
 exactly (the sign of zero depends on the mode); the exponent alignment in FMA when c is far
 below a×b (the gap shortcut from Add applies). Mutation plans per piece, as before.
 
-### Session 7 — parse into an `IeeeFormat` (order item 4): brief for a fresh chat
+### Session 7 — parse into an `IeeeFormat` (order item 4): done 2026-10-11
+- [x] `ApFloat.Parse`/`TryParse(s, IeeeFormat, mode, provider)`, `StartParse(s, IeeeFormat, mode)`,
+      `ieee.Parse(s)`: rounded once straight into the format, as double.Parse; flags on the context.
+- [x] The engine's ends agree on `RangeOf` (tiny / overflowing) as well as on the value; Inexact for
+      an engine-settled result from the digits (`IsExactly`); text far out of range settled early
+      (`SettlesEarly`), exponents past a long saturating in a format.
+- [x] 630 → 643 tests; old against new timing shows no cost to the precision path; 21 mutations,
+      20 red and one real hole (the context not sticky), closed: see WORKLOG.
+
+The brief, kept for reference:
 Goal: text rounded **once**, straight into a format, subnormals and overflow included, with
 flags. Today the only route is `Parse(s, 53).WithFormat(IeeeFormat.Binary64)`, which rounds twice
 (to 53 bits, then again among the subnormals: wrong in the last place for some subnormal
@@ -420,6 +430,48 @@ one.
 Mutations to plan: the engine's ends rounded to the precision rather than into the format (a
 double rounding), the early-out margins too tight, Inexact taken from the engine instead of from
 exactness, hex text skipping the format, tininess judged before rounding.
+
+### Session 8 — `ApInt` bitwise operators, then `Pow`, `ModPow`, `Gcd` (order item 5): brief for a fresh chat
+Goal: `&`, `|`, `^`, `~` on `ApInt` with `BigInteger`'s two's-complement meaning (a negative is
+an infinite run of 1s on the left), then `Pow(ApInt, int)`, `ModPow(value, exponent, modulus)`,
+`Gcd(a, b)`. Order item 6 (generic math, `IBinaryInteger<ApInt>`) needs all of them next, so take
+.NET's names and semantics unless Matthew says otherwise.
+
+**Ask Matthew first** (one question, previews, recommendation first): ModPow's sign. .NET's
+`BigInteger.ModPow(-2, 3, 5)` is -3 (the result takes the dividend's sign, like `%`).
+Mathematicians' mod would say 2. Recommend .NET's, since generic math code will expect it and
+`%` already truncates. Also mention (decided, not asked): `Pow` with a negative exponent throws
+`ArgumentOutOfRangeException` and `Pow(0, 0)` is 1, both as `BigInteger`; `Gcd` is never negative,
+and `Gcd(0, 0)` is 0. (All checked on .NET 10, 2026-10-11: ModPow(-2, 3, 5) = -3, ModPow(2, 3, -5)
+= 3, a zero modulus throws DivideByZeroException, Gcd(-4, 6) = 2, ~5 = -6, -6 & 7 = 2, -6 | 1 = -5.)
+
+Where it plugs in:
+- `ApInt` is sign + magnitude (`ApInt.cs`). For the bitwise ops, turn each negative operand into
+  two's complement over max(limbs) + 1 limbs (`~(|x| − 1)`, with `Magnitude.Subtract`), apply the
+  word op limb by limb (it's bitwise already, so the project's rule is kept by construction), and
+  turn the result back from its top bit's sign. `~x` is `−x − 1` (`BigInteger` agrees).
+- `Pow`: square-and-multiply on `Magnitude.Multiply`. The sign is negative for a negative base and
+  an odd exponent.
+- `ModPow`: square-and-multiply with `Magnitude.DivRem` after each product (6b's private
+  `PowerOfTwoMod` in `ApFloat.Operations.cs` is the same loop for base 2; consider sharing it).
+  The modulus's sign is ignored and a zero modulus throws `DivideByZeroException`, as `BigInteger`.
+- `Gcd`: **binary GCD (Stein's)**. It uses only shifts, subtraction and comparison, so it suits
+  the bitwise rule better than Euclid's divisions. Take out the common power of two with
+  `TrailingZeroCount`, then subtract the smaller from the larger and strip zeros until they meet.
+
+Pitfalls: the two's-complement borrow at limb boundaries (all-zero low limbs make `|x| − 1` borrow
+across them, so the biased random operands matter here); the result's sign for each mix of
+operand signs; `x & -x` (the lowest set bit); a result that comes back with a top limb of all ones
+needs that limb kept until it's converted back.
+
+Oracles: `BigInteger`'s own `&`, `|`, `^`, `~`, `Pow`, `ModPow` and `GreatestCommonDivisor`, on
+`Oracle.RandomBig`'s biased limbs with both signs. Check every pair of longs from a small set (0, ±1,
+±2^k ± 1, long.MinValue) against long's own operators too, as `DivisionTests` does.
+
+Mutations to plan: the borrow in the two's complement, the extra limb dropped, a sign rule
+swapped (`&` of two negatives is negative, `|` with any negative is negative, `^` of mixed signs is
+negative), `~` as plain negation, ModPow's sign, Pow's sign for an odd exponent, Gcd's power of two
+lost, Gcd of a negative coming back negative.
 
 ### The rest (from the reference-mode plan's old session 6; see "Order of work" for where each now goes)
 - ~~IEEE status flags: inexact, overflow, underflow, invalid, divide-by-zero.~~ Done in 6a.

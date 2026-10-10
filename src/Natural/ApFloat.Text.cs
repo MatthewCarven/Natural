@@ -507,13 +507,13 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
             {
                 // As in Scaled: the one step, without the iterator.
                 pinning.Exact = true;
-                pinning.Result = FromDecimalExact(_x._negative, q, s, _x.Precision, RoundingMode.ToNearestEven);
+                pinning.Result = FromDecimalExact(_x._negative, q, s, Target.Of(_x.Precision), RoundingMode.ToNearestEven, ref pinning.Flags);
                 WorkDone += first;
                 ExpectedWork = WorkDone + _later;
                 yield return first;
                 yield break;
             }
-            foreach (long units in FromDecimalSteps(_x._negative, q, s, _x.Precision, RoundingMode.ToNearestEven, _route, pinning))
+            foreach (long units in FromDecimalSteps(_x._negative, q, s, Target.Of(_x.Precision), RoundingMode.ToNearestEven, _route, pinning))
             {
                 WorkDone += units;
                 ExpectedWork = WorkDone + pinning.NextUnits + _later;
@@ -752,8 +752,32 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     /// </summary>
     /// <exception cref="FormatException">It isn't a number.</exception>
     /// <exception cref="OverflowException">The value's binary exponent wouldn't fit a long.</exception>
-    public static ApFloat Parse(string s, int precision, RoundingMode mode = RoundingMode.ToNearestEven, IFormatProvider? provider = null) =>
-        ParseCore(s, precision, mode, provider, out ApFloat result) switch
+    public static ApFloat Parse(string s, int precision, RoundingMode mode = RoundingMode.ToNearestEven, IFormatProvider? provider = null)
+    {
+        IeeeFlags ignored = IeeeFlags.None;
+        return Parse(s, Target.Of(precision), mode, provider, ref ignored);
+    }
+
+    /// <summary>
+    /// Parses a number and rounds it once, correctly, straight into the format: subnormals, overflow
+    /// and all, exactly as double.Parse and float.Parse do for binary64 and binary32. (Parsing to
+    /// the precision and then calling <see cref="WithFormat"/> rounds twice, and among the
+    /// subnormals that can be one place out.) The syntax is <see cref="Parse(string, int,
+    /// RoundingMode, IFormatProvider?)"/>'s. A value clearly out of the format's range is settled
+    /// from the digits' count and the exponent alone, so "1e-99999999999999999999" is 0 at once,
+    /// with no arithmetic; an exponent past a long saturates this way too, as with double.Parse.
+    /// For the flags (Inexact, Overflow, Underflow), use <see cref="IeeeContext.Parse"/>.
+    /// </summary>
+    /// <exception cref="FormatException">It isn't a number.</exception>
+    public static ApFloat Parse(string s, IeeeFormat format, RoundingMode mode = RoundingMode.ToNearestEven, IFormatProvider? provider = null)
+    {
+        IeeeFlags ignored = IeeeFlags.None;
+        return Parse(s, Target.Of(format), mode, provider, ref ignored);
+    }
+
+    /// <summary>A parse rounded into the target, raising the flags its rounding raises (IeeeContext's way in).</summary>
+    internal static ApFloat Parse(string s, Target target, RoundingMode mode, IFormatProvider? provider, ref IeeeFlags flags) =>
+        ParseCore(s, target, mode, provider, out ApFloat result, ref flags) switch
         {
             ParseOutcome.Parsed => result,
             ParseOutcome.TooLarge => throw TooLarge(s),
@@ -771,36 +795,55 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     public static bool TryParse([NotNullWhen(true)] string? s, IFormatProvider? provider, out ApFloat result) =>
         TryParse(s, DefaultPrecision, RoundingMode.ToNearestEven, provider, out result);
 
-    public static bool TryParse([NotNullWhen(true)] string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result) =>
-        ParseCore(s, precision, mode, provider, out result) == ParseOutcome.Parsed;
+    public static bool TryParse([NotNullWhen(true)] string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result)
+    {
+        IeeeFlags ignored = IeeeFlags.None;
+        return ParseCore(s, Target.Of(precision), mode, provider, out result, ref ignored) == ParseOutcome.Parsed;
+    }
+
+    /// <summary>As <see cref="Parse(string, IeeeFormat, RoundingMode, IFormatProvider?)"/>, but false where that throws.</summary>
+    public static bool TryParse([NotNullWhen(true)] string? s, IeeeFormat format, RoundingMode mode, IFormatProvider? provider, out ApFloat result)
+    {
+        IeeeFlags ignored = IeeeFlags.None;
+        return ParseCore(s, Target.Of(format), mode, provider, out result, ref ignored) == ParseOutcome.Parsed;
+    }
 
     private enum ParseOutcome { Parsed, NotANumber, TooLarge }
 
-    private static ParseOutcome ParseCore(string? s, int precision, RoundingMode mode, IFormatProvider? provider, out ApFloat result)
+    /// <summary>The whole parse, raising its flags in <paramref name="flags"/> only if it parsed.</summary>
+    private static ParseOutcome ParseCore(string? s, Target target, RoundingMode mode, IFormatProvider? provider,
+                                          out ApFloat result, ref IeeeFlags flags)
     {
-        ParseOutcome outcome = PrepareParse(s, precision, mode, provider, out result, out DecimalParse? work);
-        if (outcome != ParseOutcome.Parsed || work is null) return outcome;
-        try
+        IeeeFlags raised = IeeeFlags.None;
+        ParseOutcome outcome = PrepareParse(s, target, mode, provider, out result, out DecimalParse? work, ref raised);
+        if (outcome != ParseOutcome.Parsed) return outcome;
+        if (work is not null)
         {
-            result = work.RunToEnd();
-            return ParseOutcome.Parsed;
+            try
+            {
+                result = work.RunToEnd();
+                raised |= work.Flags;
+            }
+            catch (OverflowException)
+            {
+                return ParseOutcome.TooLarge;   // a value whose binary exponent wouldn't fit a long
+            }
         }
-        catch (OverflowException)
-        {
-            return ParseOutcome.TooLarge;   // a value whose binary exponent wouldn't fit a long
-        }
+        flags |= raised;
+        return ParseOutcome.Parsed;
     }
 
     /// <summary>
-    /// All of a parse but the decimal arithmetic: the syntax, the special values, and hex and
-    /// binary (whose cost is linear). For decimal text, <paramref name="work"/> is the rest, to
-    /// run to the end or a slice at a time; otherwise it's null and <paramref name="result"/>
-    /// is the answer.
+    /// All of a parse but the decimal arithmetic: the syntax, the special values, hex and
+    /// binary (whose cost is linear), and in a format, decimal text clearly out of its range.
+    /// For other decimal text, <paramref name="work"/> is the rest, to run to the end or a slice
+    /// at a time; otherwise it's null, <paramref name="result"/> is the answer, and its flags
+    /// are in <paramref name="flags"/>.
     /// </summary>
-    private static ParseOutcome PrepareParse(string? s, int precision, RoundingMode mode, IFormatProvider? provider,
-                                             out ApFloat result, out DecimalParse? work)
+    private static ParseOutcome PrepareParse(string? s, Target target, RoundingMode mode, IFormatProvider? provider,
+                                             out ApFloat result, out DecimalParse? work, ref IeeeFlags flags)
     {
-        CheckPrecision(precision);
+        int precision = target.Precision;
         result = default;
         work = null;
         if (s is null) return ParseOutcome.NotANumber;
@@ -835,10 +878,10 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         try
         {
             if (span.Length > 2 && span[0] == '0' && span[1] is 'x' or 'X')
-                return ParsePowerOfTwoRadix(span[2..], 4, negative, precision, mode, out result);
+                return ParsePowerOfTwoRadix(span[2..], 4, negative, target, mode, out result, ref flags);
             if (span.Length > 2 && span[0] == '0' && span[1] is 'b' or 'B')
-                return ParsePowerOfTwoRadix(span[2..], 1, negative, precision, mode, out result);
-            return ScanDecimal(span, negative, precision, mode, nfi, out work);
+                return ParsePowerOfTwoRadix(span[2..], 1, negative, target, mode, out result, ref flags);
+            return ScanDecimal(span, negative, target, mode, nfi, out result, out work, ref flags);
         }
         catch (OverflowException)
         {
@@ -857,14 +900,18 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     /// digits [separator digits] [e [sign] digits]: the syntax, and the work of making the exact
     /// rational digits × 10^exp and rounding it once.
     /// </summary>
-    private static ParseOutcome ScanDecimal(ReadOnlySpan<char> span, bool negative, int precision, RoundingMode mode,
-                                            NumberFormatInfo nfi, out DecimalParse? work)
+    private static ParseOutcome ScanDecimal(ReadOnlySpan<char> span, bool negative, Target target, RoundingMode mode,
+                                            NumberFormatInfo nfi, out ApFloat result, out DecimalParse? work, ref IeeeFlags flags)
     {
+        result = default;
         work = null;
         int e = span.IndexOfAny('e', 'E');
         ReadOnlySpan<char> mantissa = e < 0 ? span : span[..e];
         long exponent = 0;
-        if (e >= 0 && ParseExponent(span[(e + 1)..], out exponent) is var outcome and not ParseOutcome.Parsed) return outcome;
+        ParseOutcome exponentOutcome = e < 0 ? ParseOutcome.Parsed : ParseExponent(span[(e + 1)..], out exponent);
+        // An exponent past a long: too large for a precision, but in a format, just out of range.
+        if (exponentOutcome == ParseOutcome.NotANumber || (exponentOutcome == ParseOutcome.TooLarge && target.Format is null))
+            return exponentOutcome;
 
         string separator = nfi.NumberDecimalSeparator;
         int point = mantissa.IndexOf(separator, StringComparison.Ordinal);
@@ -875,20 +922,68 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
 
         // At least one digit, and underscores only between digits: what the digit loop takes.
         string digits = string.Concat(whole, fraction);
-        long n = checked(exponent - (fraction.Length - fraction.Count('_')));
-        work = new DecimalParse(negative, digits, n, precision, mode, ForcedRoute);
+        int fractionDigits = fraction.Length - fraction.Count('_');
+        if (target.Format is { } format && SettlesEarly(digits, exponent, fractionDigits, negative, format, mode, out result, ref flags))
+            return ParseOutcome.Parsed;
+        if (exponentOutcome == ParseOutcome.TooLarge) return exponentOutcome;   // settled early, always: it's here for safety
+        long n = checked(exponent - fractionDigits);
+        work = new DecimalParse(negative, digits, n, target, mode, ForcedRoute);
         return ParseOutcome.Parsed;
     }
 
-    /// <summary>Hex or binary digits [. digits] [p [sign] decimal digits]: exact, then rounded to the precision.</summary>
-    private static ParseOutcome ParsePowerOfTwoRadix(ReadOnlySpan<char> span, int bitsPerDigit, bool negative, int precision,
-                                                     RoundingMode mode, out ApFloat result)
+    /// <summary>
+    /// Decimal text whose value a format settles without arithmetic: zero (all its digits are),
+    /// or so far out of range that only its sign and the mode matter. With D significant digits
+    /// and the exponent n of the last, 10^(D − 1 + n) ≤ |value| &lt; 10^(D + n), and 3.321 is under
+    /// log2(10) = 3.3219..., which bounds log2 |value| from below or above. Past 2^(emax+1) it
+    /// overflows in any mode; under half the smallest subnormal it rounds as any value there
+    /// does. Either way it's rounded as a stand-in, one bit just past the edge, to get the
+    /// mode's answer and the flags. The rest (the grey zone too) is left to the arithmetic.
+    /// </summary>
+    private static bool SettlesEarly(string digits, long exponent, int fractionDigits, bool negative, IeeeFormat format,
+                                     RoundingMode mode, out ApFloat result, ref IeeeFlags flags)
+    {
+        int first = digits.AsSpan().IndexOfAnyExcept('0', '_');
+        if (first < 0)
+        {
+            result = ZeroOf(negative, format.Precision);
+            return true;
+        }
+        long significant = digits.Length - first - digits.AsSpan(first).Count('_');
+        Int128 lead = (Int128)significant - 1 + exponent - fractionDigits;   // |value| ≥ 10^lead
+        long minExp = format.MinExponent - (format.Precision - 1);           // the smallest subnormal is 2^minExp
+
+        if (lead > 0 && lead * 3321 / 1000 > format.MaxExponent)
+        {
+            result = RoundToFormat(negative, [1], format.MaxExponent + 1, false, format, mode, out IeeeFlags raised);
+            flags |= raised;
+            return true;
+        }
+        // |value| < 10^(lead + 1); for a negative power, truncating the product rounds it up.
+        if (lead + 1 < 0 && (lead + 1) * 3321 / 1000 < minExp - 1)
+        {
+            result = RoundToFormat(negative, [1], minExp - 2, false, format, mode, out IeeeFlags raised);
+            flags |= raised;
+            return true;
+        }
+        result = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Hex or binary digits [. digits] [p [sign] decimal digits]: exact, then rounded into the
+    /// target. In a format, an exponent past a long is only out of range: it saturates.
+    /// </summary>
+    private static ParseOutcome ParsePowerOfTwoRadix(ReadOnlySpan<char> span, int bitsPerDigit, bool negative, Target target,
+                                                     RoundingMode mode, out ApFloat result, ref IeeeFlags flags)
     {
         result = default;
         int p = span.IndexOfAny('p', 'P');
         ReadOnlySpan<char> mantissa = p < 0 ? span : span[..p];
         long exponent = 0;
-        if (p >= 0 && ParseExponent(span[(p + 1)..], out exponent) is var outcome and not ParseOutcome.Parsed) return outcome;
+        ParseOutcome exponentOutcome = p < 0 ? ParseOutcome.Parsed : ParseExponent(span[(p + 1)..], out exponent);
+        if (exponentOutcome == ParseOutcome.NotANumber || (exponentOutcome == ParseOutcome.TooLarge && target.Format is null))
+            return exponentOutcome;
 
         int point = mantissa.IndexOf('.');
         ReadOnlySpan<char> whole = point < 0 ? mantissa : mantissa[..point];
@@ -899,8 +994,21 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
 
         string digits = string.Concat(whole, fraction);
         ApInt m = digits.Length == 0 ? ApInt.Zero : ApInt.Parse((bitsPerDigit == 4 ? "0x" : "0b") + digits);
-        long exp = checked(exponent - (long)bitsPerDigit * (fraction.Length - fraction.Count('_')));
-        result = m.IsZero ? ZeroOf(negative, precision) : new ApFloat(negative ? -m : m, exp, precision, mode);
+        if (m.IsZero)
+        {
+            result = ZeroOf(negative, target.Precision);
+            return ParseOutcome.Parsed;
+        }
+        Int128 exp = (Int128)exponent - (Int128)bitsPerDigit * (fraction.Length - fraction.Count('_'));
+        if (target.Format is not null)
+        {
+            // Every format's range lies well inside ±2^62, so clamping there changes no result,
+            // and keeps the value's top bit from overflowing a long.
+            exp = Int128.Clamp(exp, -(1L << 62), 1L << 62);
+        }
+        else if (exponentOutcome == ParseOutcome.TooLarge || exp < long.MinValue || exp > long.MaxValue)
+            return ParseOutcome.TooLarge;
+        result = target.Round(negative, m.Limbs, (long)exp, false, mode, ref flags);
         return ParseOutcome.Parsed;
     }
 
@@ -927,14 +1035,15 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         return true;
     }
 
+    /// <summary>An exponent's digits. One past a long is TooLarge, and comes back as long's limit on its side.</summary>
     private static ParseOutcome ParseExponent(ReadOnlySpan<char> text, out long exponent)
     {
         exponent = 0;
         ReadOnlySpan<char> digits = text.Length > 0 && text[0] is '+' or '-' ? text[1..] : text;
         if (digits.IsEmpty || digits.ContainsAnyExceptInRange('0', '9')) return ParseOutcome.NotANumber;
-        return long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out exponent)
-            ? ParseOutcome.Parsed
-            : ParseOutcome.TooLarge;
+        if (long.TryParse(text, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out exponent)) return ParseOutcome.Parsed;
+        exponent = text[0] == '-' ? long.MinValue : long.MaxValue;
+        return ParseOutcome.TooLarge;
     }
 
     /// <summary>
@@ -946,27 +1055,64 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     {
         if (q.Length == 0) return ZeroOf(negative, precision);
         var pinning = new Pinning();
-        return RunToEnd(FromDecimalSteps(negative, q, s, precision, mode, ForcedRoute, pinning), pinning);
+        return RunToEnd(FromDecimalSteps(negative, q, s, Target.Of(precision), mode, ForcedRoute, pinning), pinning);
     }
 
-    /// <summary>FromDecimal as steps, for q non-zero: the first round has the precision and the guard bits.</summary>
-    private static IEnumerable<long> FromDecimalSteps(bool negative, uint[] q, long s, int precision, RoundingMode mode,
+    /// <summary>
+    /// FromDecimal as steps, for q non-zero, rounding into the target: the first round has the
+    /// precision and the guard bits. In a format, the interval's ends must agree on the range
+    /// (RangeOf) too. The exact route leaves its flags in pinning.Flags; a settled round leaves
+    /// the range in pinning.Range, for <see cref="SettledFlags"/>.
+    /// </summary>
+    private static IEnumerable<long> FromDecimalSteps(bool negative, uint[] q, long s, Target target, RoundingMode mode,
                                                       Route route, Pinning pinning) =>
-        TimesPowerOfTenSteps(q, 0, s, (long)precision + GuardBits,
-            (mag, exp) => RoundExact(negative, mag, exp, false, precision, mode),
-            () => FromDecimalExact(negative, q, s, precision, mode), route, pinning);
+        TimesPowerOfTenSteps(q, 0, s, (long)target.Precision + GuardBits,
+            (mag, exp) => target.Round(negative, mag, exp, false, mode),
+            () => FromDecimalExact(negative, q, s, target, mode, ref pinning.Flags), route, pinning,
+            target.Format is null ? null : (mag, exp) => target.RangeOf(negative, mag, exp, mode));
 
     /// <summary>
-    /// FromDecimal the exact way: the exact rational, rounded once. For s &gt;= 0 that's the
-    /// integer q × 5^s × 2^s; below, it's q × 2^s / 5^-s, divided as Divide does it (enough
-    /// quotient bits for the rounding, and the remainder as the sticky bit). q is non-zero.
+    /// FromDecimal the exact way: the exact rational, rounded once into the target. For s &gt;= 0
+    /// that's the integer q × 5^s × 2^s; below, it's q × 2^s / 5^-s, divided as Divide does it
+    /// (enough quotient bits for the rounding, and the remainder as the sticky bit). q is non-zero.
     /// </summary>
-    private static ApFloat FromDecimalExact(bool negative, uint[] q, long s, int precision, RoundingMode mode)
+    private static ApFloat FromDecimalExact(bool negative, uint[] q, long s, Target target, RoundingMode mode, ref IeeeFlags flags)
     {
-        if (s >= 0) return RoundExact(negative, Magnitude.Multiply(q, PowerOfFive(s)), s, false, precision, mode);
+        if (s >= 0) return target.Round(negative, Magnitude.Multiply(q, PowerOfFive(s)), s, false, mode, ref flags);
         uint[] five = PowerOfFive(-s);
-        long shift = Math.Max(0, precision + 2 + Magnitude.BitLength(five) - Magnitude.BitLength(q));
+        long shift = Math.Max(0, target.Precision + 2 + Magnitude.BitLength(five) - Magnitude.BitLength(q));
         uint[] quotient = Magnitude.DivRem(Magnitude.ShiftLeft(q, shift), five, out uint[] remainder);
-        return RoundExact(negative, quotient, checked(s - shift), remainder.Length != 0, precision, mode);
+        return target.Round(negative, quotient, checked(s - shift), remainder.Length != 0, mode, ref flags);
+    }
+
+    /// <summary>
+    /// The flags for a result the interval rounds settled: the ends agreed on the value and on the
+    /// range, but they can't say whether the text was exact, which Inexact needs (and Underflow
+    /// with it). The digits can: see <see cref="IsExactly"/>.
+    /// </summary>
+    private static IeeeFlags SettledFlags(ApFloat r, uint[] q, long s, IeeeFlags range)
+    {
+        if ((range & IeeeFlags.Overflow) != 0) return IeeeFlags.Overflow | IeeeFlags.Inexact;
+        if (IsExactly(r, q, s)) return IeeeFlags.None;
+        return (range & IeeeFlags.Underflow) != 0 ? IeeeFlags.Underflow | IeeeFlags.Inexact : IeeeFlags.Inexact;
+    }
+
+    /// <summary>
+    /// Whether r is exactly ±q × 10^s (q non-zero). With q = Q × 2^t, Q odd, the value is
+    /// Q × 5^s × 2^(s+t), whose odd part is Q × 5^s for s ≥ 0, and Q / 5^-s below (an integer only
+    /// if 5^-s divides Q). So r's exponent must be s + t, and one odd part must be the other times
+    /// 5^|s|. The exponent and the bit lengths turn nearly everything away before any multiply.
+    /// </summary>
+    private static bool IsExactly(ApFloat r, uint[] q, long s)
+    {
+        if (r._kind != Kind.Finite) return false;
+        long t = Magnitude.TrailingZeroCount(q);
+        if ((Int128)r._exp != (Int128)s + t) return false;
+        uint[] odd = Magnitude.ShiftRight(q, t);
+        (uint[] larger, uint[] smaller) = s >= 0 ? (r.Mant, odd) : (odd, r.Mant);
+        long power = Math.Abs(s), fiveBits = FloorLog2Of5Times(power) + 1;
+        long longer = Magnitude.BitLength(larger) - Magnitude.BitLength(smaller);   // smaller × 5^power has this many bits more, or one fewer
+        if (longer != fiveBits && longer != fiveBits - 1) return false;
+        return Magnitude.Compare(larger, Magnitude.Multiply(smaller, PowerOfFive(power))) == 0;
     }
 }

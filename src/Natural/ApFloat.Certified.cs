@@ -90,6 +90,10 @@ public readonly partial struct ApFloat
         public int Rounds;
         public long WorkingBits;
         public bool Exact;
+        /// <summary>When the rounds settled it: where the value falls against a format's range (RangeOf), agreed by both ends.</summary>
+        public IeeeFlags Range;
+        /// <summary>When the exact route settled it: the flags its rounding raised.</summary>
+        public IeeeFlags Flags;
         /// <summary>The last round's ends: Low &lt;= X × 10^n &lt;= High, at WorkingBits.</summary>
         public ApFloat? Low, High;
         /// <summary>An estimate of the next step's limb steps, for progress: 0 once done.</summary>
@@ -101,11 +105,14 @@ public readonly partial struct ApFloat
     /// and one for the exact route if it runs. Each yields an estimate of its limb steps (see
     /// <see cref="RoundUnits"/>), the same on any machine. <paramref name="route"/> is read by
     /// the caller, since a job's steps may run on another thread. <see cref="FirstStepUnits"/>
-    /// estimates the first step before it runs.
+    /// estimates the first step before it runs. With <paramref name="range"/> (a format's
+    /// RangeOf), the ends must agree on it too before a round settles, and it goes in
+    /// pinning.Range: the value alone doesn't decide Underflow or Overflow.
     /// </summary>
     private static IEnumerable<long> TimesPowerOfTenSteps(uint[] mag, long exp, long n, long startBits,
                                                           Func<uint[], long, ApFloat> round, Func<ApFloat> exact,
-                                                          Route route, Pinning pinning)
+                                                          Route route, Pinning pinning,
+                                                          Func<uint[], long, IeeeFlags>? range = null)
     {
         long power = Math.Abs(n), xBits = Magnitude.BitLength(mag);
         if (ExactFromTheStart(n, route))
@@ -151,10 +158,13 @@ public readonly partial struct ApFloat
             pinning.High = new ApFloat(Kind.Finite, false, hi.Mant, hiExp, bits);
             ApFloat a = round(lo.Mant, loExp);
             ApFloat b = round(hi.Mant, hiExp);
+            IeeeFlags rangeA = range?.Invoke(lo.Mant, loExp) ?? IeeeFlags.None;
+            IeeeFlags rangeB = range?.Invoke(hi.Mant, hiExp) ?? IeeeFlags.None;
             long units = RoundUnits(xBits, w, nBits);
-            if (SameValue(a, b))
+            if (SameValue(a, b) && rangeA == rangeB)
             {
                 pinning.Result = a;
+                pinning.Range = rangeA;
                 pinning.NextUnits = 0;
                 yield return units;
                 yield break;

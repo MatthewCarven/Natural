@@ -103,6 +103,19 @@ The 53-bit *operators* (unbounded exponent) still round a second time when a res
 among `double`'s subnormals — roughly 1% of products and quotients can differ in the last
 place. That is documented on the type; the format overloads are the fix.
 
+Text too. `Parse(s, IeeeFormat.Binary64)` rounds once, straight into the format, exactly as
+`double.Parse` does. Parsing at 53 bits and then calling `WithFormat` rounds twice, which can
+put a subnormal one place out:
+
+```csharp
+ApFloat.Parse("2.4703282292062328e-324", IeeeFormat.Binary64);   // 4.94e-324: just over half the smallest subnormal
+ApFloat.Parse("1e-400", IeeeFormat.Binary64);                    // 0
+ApFloat.Parse("1e99999999999999999999", IeeeFormat.Binary64);    // ∞: in a format, an exponent past a long just saturates
+```
+
+Text clearly out of the format's range is settled from its digit count and exponent alone, so
+"1e-1000000000000000000" takes under a microsecond into binary64.
+
 ## IEEE status flags
 
 IEEE 754's five flags (inexact, underflow, overflow, divide-by-zero, invalid) come from an
@@ -147,6 +160,7 @@ var ieee = new IeeeContext(IeeeFormat.Binary64, RoundingMode.TowardPositive);
 ieee.RoundToIntegral(2.5);                            // 3, and Inexact
 ieee.Convert(ApFloat.Parse("0.1"));                   // 0.1 rounded up into a double, and Inexact again
 ieee.Sqrt(-1);                                        // NaN, and Invalid
+ieee.Parse("1e400");                                  // ∞, and Overflow (IEEE's convertFromDecimalCharacter)
 ```
 
 Rounding to an integer is exact, at the value's own precision. The remainder is exact too,
@@ -237,13 +251,14 @@ while (!print.Continue(TimeSpan.FromMilliseconds(50))) { }
 string digits = print.Result;
 ```
 
+`ApFloat.StartParse(text, IeeeFormat.Binary128)` is the same job, rounding into a format.
 Work is counted in limb steps, so a budget of units means the same on any machine. The job
 machinery is `Natural.Jobs`, which knows nothing about numbers: any loop written as an iterator
 that yield-returns the work it just did can be a job.
 
 ## How it is tested
 
-630 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
+643 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
 with the thing under test:
 
 - **`BigInteger`**, converted through raw magnitude bytes so the arithmetic tests don't
@@ -266,7 +281,7 @@ result is computed exactly and rounded exactly once, at a precision you choose.
 ## Build
 
 ```
-dotnet test Natural.slnx                                        # 630 tests
+dotnet test Natural.slnx                                        # 643 tests
 dotnet run -c Release tests/bench/timing.cs                     # decimal text timings
 ```
 
@@ -298,8 +313,8 @@ Natural_Playground/     a WinForms calculator that takes results apart
 
 Arbitrary-precision integers and binary floats are implemented and tested, with IEEE status
 flags, fused multiply-add, square roots (`ApInt` and `ApFloat`), rounding to integers and the
-remainder, and long parsing and formatting run as resumable jobs. Not yet built, in the order
-they are planned: parsing into an `IeeeFormat`; `ApInt` bitwise
+remainder, parsing straight into an IEEE format, and long parsing and formatting run as
+resumable jobs. Not yet built, in the order they are planned: `ApInt` bitwise
 operators then `Pow`/`ModPow`/`Gcd`; generic math interfaces; speed; transcendentals.
 
 See `TODO.md` for the full list and `CLAUDE.md` for the layout and conventions in more

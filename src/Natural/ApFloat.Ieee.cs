@@ -220,6 +220,28 @@ public readonly partial struct ApFloat
         return new ApFloat(Kind.Finite, negative, ones, emax - (precision - 1), precision);
     }
 
+    /// <summary>
+    /// Where ±mag × 2^exp (non-zero) falls against the format's range, judged as
+    /// <see cref="RoundToFormat(bool, uint[], long, bool, IeeeFormat, RoundingMode, out IeeeFlags)"/>
+    /// judges it: Underflow if it's tiny (rounded to the precision with no floor, it's below
+    /// 2^emin), Overflow if it overflows (rounded with no ceiling, it's 2^(emax+1) or more), None
+    /// between. Not flags raised, just the classes. The certified engine needs its two ends to
+    /// agree on these as well as on the value: ends that round to the same value can still differ
+    /// here (one tiny, the other just rounding up to 2^emin), and the flags hang on it. Both are
+    /// roundings, so monotone: ends that agree settle it for every value between them.
+    /// </summary>
+    private static IeeeFlags RangeOf(bool negative, uint[] mag, long exp, IeeeFormat format, RoundingMode mode)
+    {
+        long emax = format.MaxExponent, emin = format.MinExponent;
+        long top = exp + Magnitude.BitLength(mag) - 1;
+        if (top < emin - 1) return IeeeFlags.Underflow;
+        if (top > emax) return IeeeFlags.Overflow;
+        if (top != emin - 1 && top != emax) return IeeeFlags.None;
+        // At the edge of a binade that rounding can leave: round, and look again.
+        long rounded = RoundExact(negative, mag, exp, false, format.Precision, mode).Top;
+        return rounded < emin ? IeeeFlags.Underflow : rounded > emax ? IeeeFlags.Overflow : IeeeFlags.None;
+    }
+
     /// <summary>Round into the format, then lay the (now exact) value out as bits.</summary>
     private uint[] EncodeIeee(IeeeFormat format, RoundingMode mode) => PackIeee(WithFormat(format, mode), format);
 
