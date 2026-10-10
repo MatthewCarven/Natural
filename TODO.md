@@ -437,7 +437,13 @@ an infinite run of 1s on the left), then `Pow(ApInt, int)`, `ModPow(value, expon
 `Gcd(a, b)`. Order item 6 (generic math, `IBinaryInteger<ApInt>`) needs all of them next, so take
 .NET's names and semantics unless Matthew says otherwise.
 
-**Ask Matthew first** (one question, previews, recommendation first): ModPow's sign. .NET's
+**Answered (Matthew, 2026-10-11): ModPow takes the base's sign, exactly as `BigInteger.ModPow`**
+((value^exponent) % modulus with C#'s %; the modulus's sign is ignored; never a negative zero).
+Decided and reported, not asked: **`GreatestCommonDivisor`**, .NET's name, rather than the brief's
+`Gcd`. Also checked: ModPow with a negative exponent throws ArgumentOutOfRangeException, and
+ModPow(5, 0, 1) = 0, ModPow(5, 0, -3) = 1, ModPow(-10, 3, 5) = 0.
+
+The question as it was put (one question, previews, recommendation first): ModPow's sign. .NET's
 `BigInteger.ModPow(-2, 3, 5)` is -3 (the result takes the dividend's sign, like `%`).
 Mathematicians' mod would say 2. Recommend .NET's, since generic math code will expect it and
 `%` already truncates. Also mention (decided, not asked): `Pow` with a negative exponent throws
