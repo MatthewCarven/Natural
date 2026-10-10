@@ -59,6 +59,27 @@ internal static class FloatOracle
         return new(negative, up ? n + 1 : n, ulp);
     }
 
+    /// <summary>
+    /// The flags IEEE 754 says rounding the exact value num / den raises, given the result it
+    /// rounded to: Inexact when they differ; with a format, Overflow (and Inexact) when the value
+    /// rounded with no ceiling on the exponent is past the largest binade, and Underflow when
+    /// it's inexact and tiny, judged after rounding with no floor. A null format is a precision
+    /// with an unbounded exponent. An exact zero (num = 0) raises nothing.
+    /// </summary>
+    public static IeeeFlags RoundingFlags(BigInteger num, BigInteger den, ApFloat result, IeeeFormat? format, RoundingMode mode)
+    {
+        if (num.IsZero) return IeeeFlags.None;
+        bool inexact = !result.IsFinite || result.IsZero || ToRational(result) is var (rn, rd) && rn * den != num * rd;
+        IeeeFlags flags = inexact ? IeeeFlags.Inexact : IeeeFlags.None;
+        if (format is not { } f) return flags;
+
+        Rounded u = Round(num, den, f.Precision, mode);
+        long top = u.E + (long)u.N.GetBitLength() - 1;
+        if (top > f.MaxExponent) return IeeeFlags.Overflow | IeeeFlags.Inexact;
+        if (top < f.MinExponent && inexact) flags |= IeeeFlags.Underflow;
+        return flags;
+    }
+
     /// <summary>Compares num / den with 2^k.</summary>
     private static int CompareWithPowerOfTwo(BigInteger num, BigInteger den, long k) =>
         k >= 0 ? num.CompareTo(den << (int)k) : (num << (int)-k).CompareTo(den);

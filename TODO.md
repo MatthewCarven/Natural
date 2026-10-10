@@ -9,8 +9,8 @@
 3. **The IEEE operations ApFloat still lacks**: FMA, Floor/Ceiling/Truncate/Round, IEEE
    remainder, and `ApInt` integer square root, then `ApFloat.Sqrt`. The **IEEE status
    flags** go in first, in the same session, so each new operation reports them from day one.
-   ~~6a (the flags, `IeeeContext`)~~ done 2026-10-10. **Next: 6b** (FMA, rounding to
-   integral, remainder); brief below, after session 5. Then 6c (square roots).
+   ~~6a (the flags, `IeeeContext`)~~ done 2026-10-10; ~~6b (FMA, rounding to integral,
+   remainder)~~ done 2026-10-11. **Next: 6c** (square roots); brief below, after session 5.
 4. **Parse into an `IeeeFormat`**: small, and for very wide formats it uses 4's engine.
 5. **`ApInt` bitwise operators** (`&`, `|`, `^`, `~`), then `Pow`, `ModPow`, `Gcd`.
 6. **Generic math**: `INumber<ApInt>` / `IBinaryInteger<ApInt>` (needs 5), `INumber<ApFloat>`
@@ -254,13 +254,40 @@ operation reports them from day one (Matthew's order, 2026-09-30).
 - [x] 581 → 592 tests (every pair of three 6-bit formats, NaN and ∞ included, in every mode,
       against flags predicted from the exact rational); 15 mutations, all red.
 
-#### 6b — brief for a fresh chat
-Each new operation goes on the static API (precision and `IeeeFormat` overloads, no flags) and
-on `IeeeContext` (with flags), through one flagged core: `internal static ApFloat Op(...,
-Target target, RoundingMode mode, ref IeeeFlags flags)`, rounding through
-`target.Round(..., ref flags)`, the way `Add`/`Multiply`/`Divide` do now. Extend the tests'
-`Expected` (in `IeeeFlagsTests`) with each new operation's invalid cases rather than writing
-a second predictor.
+#### 6b — done 2026-10-11
+- [x] `ApFloat.Operations.cs`, with .NET's names: `FusedMultiplyAdd` (three overloads: the
+      operands' largest precision, a precision, a format), `Floor`, `Ceiling`, `Truncate`,
+      `Round`, `Round(x, MidpointRounding)` (exact, at x's precision), `Ieee754Remainder`
+      (exact, at the larger precision, any exponent gap). On the context: `FusedMultiplyAdd`,
+      `RoundToIntegral` (roundToIntegralExact: the context's mode, Inexact), `Ieee754Remainder`.
+- [x] The context's `Round(x)` (convertFormat) is now `Convert(x)`, so `Round` means one thing.
+- [x] 592 → 615 tests: the hardware bit for bit (FMA in binary64 and binary32, all five
+      `MidpointRounding`s, `double.Ieee754Remainder`), exact rationals at any precision and
+      mode (flags included, through the shared `FloatOracle.RoundingFlags`), remainders across
+      2^(10^12). 19 mutations: see WORKLOG.
+
+#### 6c — brief for a fresh chat
+Goal: `ApInt.Sqrt` (the integer square root, floor) and `ApFloat.Sqrt`, correctly rounded, on
+the static API (precision, format, and operand-precision overloads, like FMA) and on the
+context (`ieee.Sqrt(x)`, Invalid for a negative, nothing for ±0, ∞ and NaN). Plumb it the 6b
+way: one flagged core, `internal static ApFloat Sqrt(ApFloat x, Target target, RoundingMode
+mode, ref IeeeFlags flags)`, rounding through `target.Round(..., ref flags)`.
+- `ApInt.Sqrt`: bitwise, two bits of the radicand at a time, the "digit by digit" method:
+  bring down two bits, try (4·root + 1), subtract if it fits, as restoring `DivRem` does one bit
+  at a time. No CPU multiply (the project's rule). Negative throws `ArithmeticException`.
+- `ApFloat.Sqrt`: make the exponent even, scale the significand so the integer root has at
+  least p + 2 bits, take `ApInt.Sqrt`, and a non-zero remainder is the sticky bit. Then one
+  rounding. √(−0) = −0, √(+∞) = +∞, √(negative) = NaN and Invalid.
+- Oracles: `Math.Sqrt` and `MathF.Sqrt` bit for bit (crowd round 2^k and the subnormals, whose
+  roots are normal); BigInteger Newton for the integer root (check r² ≤ n < (r + 1)²); the
+  rational oracle for every mode and precision (compare r² with x exactly: the rounded root r
+  is correct iff x lies on the right side of the rounding boundaries, squared). Extend the
+  flags predictor: a square root's exact value is irrational unless x is a square, so "inexact"
+  is r² ≠ x.
+- Mutations to plan: the two-bit step's carry, the exponent's parity, the sticky bit dropped,
+  √(−0) losing its sign, Invalid for −0.
+- After 6c, order item 3 is done. Next is item 4 (parse into an `IeeeFormat`; now that the
+  context exists, `ieee.Parse(text)` with Inexact/Overflow/Underflow is the natural shape: ask).
 
 The 6a design notes, kept for reference:
 

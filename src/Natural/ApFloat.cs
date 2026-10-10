@@ -315,8 +315,8 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
         return Divide(a, b, target, mode, ref ignored);
     }
 
-    /// <summary>x rounded into the target, with flags: WithFormat or WithPrecision.</summary>
-    internal static ApFloat Round(ApFloat x, Target target, RoundingMode mode, ref IeeeFlags flags) => x._kind switch
+    /// <summary>x rounded into the target, with flags: WithFormat or WithPrecision (IEEE's convertFormat).</summary>
+    internal static ApFloat Convert(ApFloat x, Target target, RoundingMode mode, ref IeeeFlags flags) => x._kind switch
     {
         Kind.Finite => target.Round(x._negative, x.Mant, x._exp, false, mode, ref flags),
         Kind.Zero => ZeroOf(x._negative, target.Precision),

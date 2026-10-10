@@ -128,6 +128,25 @@ Underflow means tiny and inexact, with tiny judged after rounding (as x86 does; 
 either). With a precision the exponent is unbounded, so only inexact, divide-by-zero and
 invalid can be raised.
 
+The rest of IEEE's basic operations, with .NET's names, are on both `ApFloat` and the context:
+
+```csharp
+double x = 1 + Math.ScaleB(1, -30);
+ApFloat error = ApFloat.FusedMultiplyAdd(x, x, -(x * x), IeeeFormat.Binary64);   // 2^-60: what x * x rounded off
+
+ApFloat.Floor(-2.5);                                  // -3
+ApFloat.Round(2.5);                                   // 2: ties to even, as Math.Round
+ApFloat.Round(2.5, MidpointRounding.AwayFromZero);    // 3
+ApFloat.Ieee754Remainder(7, 2);                       // -1: 7/2 = 3.5 rounds to 4
+
+var ieee = new IeeeContext(IeeeFormat.Binary64, RoundingMode.TowardPositive);
+ieee.RoundToIntegral(2.5);                            // 3, and Inexact
+ieee.Convert(ApFloat.Parse("0.1"));                   // 0.1 rounded up into a double, and Inexact again
+```
+
+Rounding to an integer is exact, at the value's own precision. The remainder is exact too,
+however far apart the exponents are: `Ieee754Remainder` of 2^(10^12) by 3 takes no time.
+
 ## Text
 
 Formatting goes from the **exact** value and rounds once, in the given mode, ties to even.
@@ -216,7 +235,7 @@ that yield-returns the work it just did can be a job.
 
 ## How it is tested
 
-592 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
+615 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
 with the thing under test:
 
 - **`BigInteger`**, converted through raw magnitude bytes so the arithmetic tests don't
@@ -239,7 +258,7 @@ result is computed exactly and rounded exactly once, at a precision you choose.
 ## Build
 
 ```
-dotnet test Natural.slnx                                        # 592 tests
+dotnet test Natural.slnx                                        # 615 tests
 dotnet run -c Release tests/bench/timing.cs                     # decimal text timings
 ```
 
@@ -257,6 +276,7 @@ src/Natural/            the library
   ApFloat.Ieee.cs       one encoder/decoder for any IeeeFormat
   ApFloat.Text.cs       decimal, hex and binary text
   ApFloat.Certified.cs  the certified interval engine
+  ApFloat.Operations.cs fused multiply-add, rounding to integers, the remainder
   ApFloat.Jobs.cs       StartParse and StartFormat: text as a job, and its certificate
   IeeeFormat.cs         an IEEE format as (exponent bits, precision)
   IeeeContext.cs        the IEEE status flags, and a context that raises them
@@ -269,9 +289,9 @@ Natural_Playground/     a WinForms calculator that takes results apart
 ## Status
 
 Arbitrary-precision integers and binary floats are implemented and tested, with IEEE status
-flags, and long parsing and formatting run as resumable jobs. Not yet built, in the order they
-are planned: the IEEE operations `ApFloat` still lacks (FMA, floor/ceiling/truncate/round,
-remainder, `ApInt` square root, `ApFloat.Sqrt`); parsing into an `IeeeFormat`; `ApInt` bitwise
+flags, fused multiply-add, rounding to integers and the remainder, and long parsing and
+formatting run as resumable jobs. Not yet built, in the order they are planned: square roots
+(`ApInt` and `ApFloat`); parsing into an `IeeeFormat`; `ApInt` bitwise
 operators then `Pow`/`ModPow`/`Gcd`; generic math interfaces; speed; transcendentals.
 
 See `TODO.md` for the full list and `CLAUDE.md` for the layout and conventions in more

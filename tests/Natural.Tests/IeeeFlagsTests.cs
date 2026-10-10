@@ -71,18 +71,7 @@ public class IeeeFlagsTests
             '*' => (an * bn, ad * bd),
             _ => (an * bd, ad * bn),
         };
-        if (num.IsZero) return IeeeFlags.None;                               // an exact zero
-        bool inexact = !result.IsFinite || result.IsZero || ToRational(result) is var (rn, rd) && rn * den != num * rd;
-        IeeeFlags flags = inexact ? IeeeFlags.Inexact : IeeeFlags.None;
-        if (format is not { } f) return flags;
-
-        // Rounded to the precision with no floor or ceiling on the exponent: where it lands says
-        // whether the result overflowed, and whether it's tiny.
-        Rounded u = Round(num, den, f.Precision, mode);
-        long top = u.E + (long)u.N.GetBitLength() - 1;
-        if (top > f.MaxExponent) return IeeeFlags.Overflow | IeeeFlags.Inexact;
-        if (top < f.MinExponent && inexact) flags |= IeeeFlags.Underflow;
-        return flags;
+        return RoundingFlags(num, den, result, format, mode);
     }
 
     private static void Check(char op, ApFloat a, ApFloat b, IeeeFormat format, RoundingMode mode, string context)
@@ -161,11 +150,11 @@ public class IeeeFlagsTests
         // (Judged before rounding, both would underflow.)
         var justUnder = new ApFloat((ApInt.One << 54) - 1, -1076, 64);
         var nearest = new IeeeContext(IeeeFormat.Binary64);
-        AssertSame(new ApFloat(ApInt.One, -1022), nearest.Round(justUnder));
+        AssertSame(new ApFloat(ApInt.One, -1022), nearest.Convert(justUnder));
         Assert.Equal(IeeeFlags.Inexact, nearest.Flags);
 
         var down = new IeeeContext(IeeeFormat.Binary64, RoundingMode.TowardZero);
-        AssertSame(new ApFloat((ApInt.One << 52) - 1, -1074), down.Round(justUnder));
+        AssertSame(new ApFloat((ApInt.One << 52) - 1, -1074), down.Convert(justUnder));
         Assert.Equal(IeeeFlags.Inexact | IeeeFlags.Underflow, down.Flags);
 
         // An exact subnormal result raises nothing, tiny as it is.
@@ -175,7 +164,7 @@ public class IeeeFlagsTests
     }
 
     [Fact]
-    public void RoundIsConvertFormatWithFlags()
+    public void ConvertIsConvertFormatWithFlags()
     {
         var binary64 = IeeeFormat.Binary64;
         (string Text, IeeeFlags Flags)[] cases =
@@ -194,12 +183,12 @@ public class IeeeFlagsTests
         {
             ApFloat x = ApFloat.Parse(text, 256);
             var ieee = new IeeeContext(binary64, mode);
-            AssertSame(x.WithFormat(binary64, mode), ieee.Round(x), text);
+            AssertSame(x.WithFormat(binary64, mode), ieee.Convert(x), text);
             Assert.True(flags == ieee.Flags, $"{text} {mode}: expected {flags}, raised {ieee.Flags}");
         }
 
         var p24 = new IeeeContext(24);
-        AssertSame(ApFloat.Parse("0.1", 256).WithPrecision(24), p24.Round(ApFloat.Parse("0.1", 256)));
+        AssertSame(ApFloat.Parse("0.1", 256).WithPrecision(24), p24.Convert(ApFloat.Parse("0.1", 256)));
         Assert.Equal(IeeeFlags.Inexact, p24.Flags);
     }
 

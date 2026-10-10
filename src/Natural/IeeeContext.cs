@@ -89,11 +89,52 @@ public sealed class IeeeContext
         return r;
     }
 
-    /// <summary>x rounded into the target (IEEE's convertFormat): <see cref="ApFloat.WithFormat"/> or <see cref="ApFloat.WithPrecision"/> with flags.</summary>
-    public ApFloat Round(ApFloat x)
+    /// <summary>
+    /// x rounded into the target (IEEE's convertFormat): <see cref="ApFloat.WithFormat"/> or
+    /// <see cref="ApFloat.WithPrecision"/>, with flags. (Called Round on 2026-10-10; renamed the next
+    /// day, when ApFloat.Round came to mean rounding to an integer, as Math.Round does.)
+    /// </summary>
+    public ApFloat Convert(ApFloat x)
     {
         IeeeFlags flags = Flags;
-        ApFloat r = ApFloat.Round(x, _target, _mode, ref flags);
+        ApFloat r = ApFloat.Convert(x, _target, _mode, ref flags);
+        Flags = flags;
+        return r;
+    }
+
+    /// <summary>a × b + c, rounded once into the target. Invalid for 0 × ∞, and for ∞ × y + ∞ of the other sign.</summary>
+    public ApFloat FusedMultiplyAdd(ApFloat a, ApFloat b, ApFloat c)
+    {
+        IeeeFlags flags = Flags;
+        ApFloat r = ApFloat.FusedMultiplyAdd(a, b, c, _target, _mode, ref flags);
+        Flags = flags;
+        return r;
+    }
+
+    /// <summary>
+    /// x rounded to an integer in the context's <see cref="Mode"/>, raising Inexact when that
+    /// changed it (IEEE's roundToIntegralExact), then into the target. For .NET's midpoint rules,
+    /// use <see cref="ApFloat.Round(ApFloat, MidpointRounding)"/> and <see cref="Convert"/>.
+    /// </summary>
+    public ApFloat RoundToIntegral(ApFloat x)
+    {
+        IeeeFlags flags = Flags;
+        ApFloat integral = ApFloat.RoundToIntegral(x, _mode);
+        if (x.IsFinite && integral != x) flags |= IeeeFlags.Inexact;
+        ApFloat r = ApFloat.Convert(integral, _target, _mode, ref flags);
+        Flags = flags;
+        return r;
+    }
+
+    /// <summary>
+    /// IEEE's remainder, x − n·y with n the nearest integer to x/y (ties to even): exact, then
+    /// into the target. Invalid for an infinite x or a zero y.
+    /// </summary>
+    public ApFloat Ieee754Remainder(ApFloat x, ApFloat y)
+    {
+        IeeeFlags flags = Flags;
+        ApFloat remainder = ApFloat.Ieee754Remainder(x, y, ref flags);
+        ApFloat r = ApFloat.Convert(remainder, _target, _mode, ref flags);
         Flags = flags;
         return r;
     }

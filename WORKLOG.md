@@ -616,3 +616,50 @@ inexact or without its own flag; 0/0 as a division by zero; each invalid case si
 rounding that overwrote earlier flags; a context that wasn't sticky; precision contexts always
 inexact; the context's mode ignored. The machine was in its slow phase (about 30 s a run,
 against 12 the day before).
+
+## 2026-10-11 — Session 6b: fused multiply-add, rounding to integers, the remainder
+
+All in `ApFloat.Operations.cs`, with .NET's names, because the generic math interfaces (order
+item 6) will require exactly `Round`, `Floor`, `Ceiling`, `Truncate`, `FusedMultiplyAdd` and
+`Ieee754Remainder`. Each is on the static API and on `IeeeContext`.
+
+- **`FusedMultiplyAdd(a, b, c)`**, plus precision and format overloads. The product is exact
+  (an odd significand times an odd one is odd, so already normalised), wrapped as a value, and
+  handed to `Add`'s core, which rounds once into the target. `Add`'s zero rules then give IEEE's
+  signed zeros, and its gap shortcut covers a c far below the product. Invalid for 0 × ∞
+  (unless an operand is NaN, which goes through quietly) and for ∞ × y + ∞ of the other sign.
+- **`Floor`, `Ceiling`, `Truncate`, `Round(x)` (ties to even, as Math.Round) and
+  `Round(x, MidpointRounding)`** (all five of .NET's): exact, at x's precision. `RoundExact`
+  with `minExp: 0` does the directed and the even ones. Ties away from zero are |x| + 1/2,
+  truncated, which is exact. The result always fits x's precision (for e < 0 the integer is at
+  most 2^(top+1) with top < p − 1). A value already integral is returned untouched, however
+  large its exponent, and a zero result keeps x's sign (Ceiling(−0.3) = −0).
+- **`Ieee754Remainder(x, y)`**: exact, at the larger precision (which it always fits: when
+  |x| ≥ |y|/2 their exponents are close). On the common grid 2^e, X mod 2Y gives both X mod Y
+  and the parity of floor(X/Y), which a tie needs. It's computed as (mx mod 2Y) × (2^k mod 2Y)
+  mod 2Y, with 2^k by square-and-multiply. So 2^(10^12) mod 3 takes 0.3 ms instead of a
+  terabit integer. remainder(x, ±∞) = x; remainder(∞, y) and remainder(x, 0) are NaN and Invalid.
+- On the context: `FusedMultiplyAdd`, `RoundToIntegral(x)` (IEEE's roundToIntegralExact: the
+  context's mode, Inexact when it changed x), `Ieee754Remainder` (exact, then into the
+  target). **The context's `Round(x)` from 6a is now `Convert(x)`**, so that `Round` means
+  rounding to an integer everywhere, as in .NET. It had existed for one day.
+
+**Tests**: 592 → 615, `IeeeOperationsTests` (23), and `FloatOracle.RoundingFlags` now shared
+(moved out of `IeeeFlagsTests`). FMA matches `Math.FusedMultiplyAdd` and
+`MathF.FusedMultiplyAdd` bit for bit (20,000 each, with addends unrelated, nearly or exactly
+cancelling, far below, or zero), and every special triple in every mode for Invalid. It also
+matches exact rationals in every mode, at precisions to 200 and in three formats, flags
+included, plus the classic (1 + 2^-30)² error term. Rounding matches `Math.Floor`, `Ceiling`,
+`Truncate` and `Round` in all five `MidpointRounding`s, bit for bit (−0 included), on 9,000
+doubles crowded at integers and halves. It matches BigInteger floor/ceiling/half-even/half-away
+at any precision, and handles 3·2^(±10^12). The remainder matches `double.Ieee754Remainder` on
+20,000 pairs (.NET's agreed everywhere). It's exact against rationals at mixed precisions,
+with x's sign on a zero and |r| ≤ |y|/2. Across 2^100000 it's checked against BigInteger
+outright; across 2^(10^12), r ≡ x (mod y) by BigInteger.ModPow. The README sample was run.
+
+**Mutation check**: 19 mutations, all red: the FMA rounding its product first, each FMA invalid
+case silent, a NaN addend checked late; Floor truncating, Round tying away, half-away dropping
+[0.5, 1), half-away rounding to nearest, an unsigned zero, the precision lost; the remainder's
+tie to odd, its zero unsigned, 2^k off by one, the parity lost (mod Y not 2Y), an infinite
+divisor not special, Invalid silent, a squaring skipped; the context's RoundToIntegral not
+inexact, or ignoring its mode.
