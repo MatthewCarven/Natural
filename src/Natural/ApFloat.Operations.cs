@@ -1,9 +1,9 @@
 namespace Natural;
 
-// IEEE 754's other operations (§5.3, §5.4): fused multiply-add, rounding to an integral value,
-// and the remainder. Each is worked out exactly and rounded at most once, as + − × ÷ are. The
-// names are .NET's (Math.FusedMultiplyAdd, Math.Floor, double.Ieee754Remainder), which the
-// generic math interfaces will ask for by name.
+// IEEE 754's other operations (§5.3, §5.4): fused multiply-add, the square root, rounding to an
+// integral value, and the remainder. Each is worked out exactly and rounded at most once, as
+// + − × ÷ are. The names are .NET's (Math.FusedMultiplyAdd, Math.Sqrt, Math.Floor,
+// double.Ieee754Remainder), which the generic math interfaces will ask for by name.
 public readonly partial struct ApFloat
 {
     // ------------------------------------------------------------------
@@ -55,6 +55,55 @@ public readonly partial struct ApFloat
             ? ZeroOf(negative, precision)
             : new ApFloat(Kind.Finite, negative, Magnitude.Multiply(a.Mant, b.Mant), checked(a._exp + b._exp), MaxPrecision);
         return Add(product, c, target, mode, ref flags);
+    }
+
+    // ------------------------------------------------------------------
+    // Square root
+    // ------------------------------------------------------------------
+
+    /// <summary>√x, correctly rounded, at x's precision (as Math.Sqrt keeps a double a double).</summary>
+    public static ApFloat Sqrt(ApFloat x) => Sqrt(x, x.Precision);
+
+    /// <summary>
+    /// √x rounded once. √(−0) is −0 and √(+∞) is +∞, as IEEE says; the root of anything below
+    /// zero, −∞ included, is NaN.
+    /// </summary>
+    public static ApFloat Sqrt(ApFloat x, int precision, RoundingMode mode = RoundingMode.ToNearestEven)
+    {
+        IeeeFlags ignored = IeeeFlags.None;
+        return Sqrt(x, Target.Of(precision), mode, ref ignored);
+    }
+
+    /// <summary>√x rounded once into the format: exactly the hardware's sqrt for binary64 and binary32.</summary>
+    public static ApFloat Sqrt(ApFloat x, IeeeFormat format, RoundingMode mode = RoundingMode.ToNearestEven)
+    {
+        IeeeFlags ignored = IeeeFlags.None;
+        return Sqrt(x, Target.Of(format), mode, ref ignored);
+    }
+
+    internal static ApFloat Sqrt(ApFloat x, Target target, RoundingMode mode, ref IeeeFlags flags)
+    {
+        int precision = target.Precision;
+        if (x.IsNaN) return NaNOf(precision);
+        if (x.IsZero) return ZeroOf(x._negative, precision);              // √(±0) is ±0
+        if (x._negative)
+        {
+            flags |= IeeeFlags.Invalid;
+            return NaNOf(precision);
+        }
+        if (x.IsInfinity) return InfinityOf(false, precision);
+
+        // x = m × 2^e. Scale m to M = m × 2^s, with e − s even, so the root's exponent is the
+        // whole number (e − s)/2, and M of 2(precision + 2) bits or one more, so its integer
+        // root has precision + 2 bits or more: the result's bits and the half bit, with the
+        // remainder as the sticky bit, as Divide does. A long m is shifted right instead, so
+        // the work depends on the precision asked for, not x's. m is odd, so that drops a 1:
+        // the sticky bit again. (The root is exact only if nothing was dropped.)
+        long s = ((precision + 2L) << 1) - Magnitude.BitLength(x.Mant);
+        if (((x._exp - s) & 1) != 0) s++;
+        uint[] scaled = s >= 0 ? Magnitude.ShiftLeft(x.Mant, s) : Magnitude.ShiftRight(x.Mant, -s);
+        uint[] root = Magnitude.Sqrt(scaled, out uint[] remainder);
+        return target.Round(false, root, checked(x._exp - s) >> 1, s < 0 || remainder.Length != 0, mode, ref flags);
     }
 
     // ------------------------------------------------------------------

@@ -6,12 +6,13 @@
    2026-10-09; ~~5b (`StartFormat`, double dabble as steps)~~ done 2026-10-10. 5c (the exact
    route as steps) is left, and measured cheap: parked (Matthew went on to session 6,
    2026-10-10).
-3. **The IEEE operations ApFloat still lacks**: FMA, Floor/Ceiling/Truncate/Round, IEEE
+3. ~~**The IEEE operations ApFloat still lacks**: FMA, Floor/Ceiling/Truncate/Round, IEEE
    remainder, and `ApInt` integer square root, then `ApFloat.Sqrt`. The **IEEE status
-   flags** go in first, in the same session, so each new operation reports them from day one.
-   ~~6a (the flags, `IeeeContext`)~~ done 2026-10-10; ~~6b (FMA, rounding to integral,
-   remainder)~~ done 2026-10-11. **Next: 6c** (square roots); brief below, after session 5.
+   flags** go in first, in the same session, so each new operation reports them from day one.~~
+   Done: 6a (the flags, `IeeeContext`) 2026-10-10; 6b (FMA, rounding to integral, remainder)
+   and 6c (square roots) 2026-10-11.
 4. **Parse into an `IeeeFormat`**: small, and for very wide formats it uses 4's engine.
+   **Next: session 7**; brief below, after session 6.
 5. **`ApInt` bitwise operators** (`&`, `|`, `^`, `~`), then `Pow`, `ModPow`, `Gcd`.
 6. **Generic math**: `INumber<ApInt>` / `IBinaryInteger<ApInt>` (needs 5), `INumber<ApFloat>`
    (needs 3).
@@ -266,7 +267,17 @@ operation reports them from day one (Matthew's order, 2026-09-30).
       mode (flags included, through the shared `FloatOracle.RoundingFlags`), remainders across
       2^(10^12). 19 mutations: see WORKLOG.
 
-#### 6c — brief for a fresh chat
+#### 6c — done 2026-10-11
+- [x] `ApInt.Sqrt` and `ApInt.SqrtRem` (`Magnitude.Sqrt`: digit by digit, two bits at a time, in
+      place). `ApFloat.Sqrt` at x's precision, a precision, or a format, and `ieee.Sqrt` on the
+      context. A significand longer than the root needs is shifted down into the sticky bit, so
+      the cost follows the precision asked for.
+- [x] 615 → 630 tests: `Math.Sqrt`/`MathF.Sqrt` bit for bit, every `Half`, the `SqrtOf` stand-in
+      rational in every mode and format (flags included), a squaring check that takes no root,
+      every value of three 6-bit formats. 21 mutations, 20 red, one equivalent (a root of p + 1
+      bits is enough): see WORKLOG.
+
+The brief, kept for reference:
 Goal: `ApInt.Sqrt` (the integer square root, floor) and `ApFloat.Sqrt`, correctly rounded, on
 the static API (precision, format, and operand-precision overloads, like FMA) and on the
 context (`ieee.Sqrt(x)`, Invalid for a negative, nothing for ±0, ∞ and NaN). Plumb it the 6b
@@ -340,6 +351,61 @@ Pitfalls to expect: signed zeros (√−0 = −0; FMA's zero sign rules); FMA wh
 exactly (the sign of zero depends on the mode); the exponent alignment in FMA when c is far
 below a×b (the gap shortcut from Add applies). Mutation plans per piece, as before.
 
+### Session 7 — parse into an `IeeeFormat` (order item 4): brief for a fresh chat
+Goal: text rounded **once**, straight into a format, subnormals and overflow included, with
+flags. Today the only route is `Parse(s, 53).WithFormat(IeeeFormat.Binary64)`, which rounds twice
+(to 53 bits, then again among the subnormals: wrong in the last place for some subnormal
+text), and does the full work for "1e400" before overflowing.
+
+**Ask Matthew first** (one question, with a preview of the calls):
+- Shape. Recommended: `ApFloat.Parse(s, IeeeFormat format, RoundingMode mode = ToNearestEven,
+  IFormatProvider? provider = null)` and `TryParse` to match, plus `ieee.Parse(s)` on the context
+  raising Inexact / Overflow / Underflow (IEEE's convertFromDecimalCharacter). That's the same
+  pattern as every operation since 6a: static without flags, the context with them.
+- Whether `StartParse` gets a format overload too. It's cheap if the rounding target is
+  already threaded through. Recommend yes, but it can wait.
+
+Where it plugs in:
+- `ParseCore` / `PrepareParse` take a precision today. Thread an `ApFloat.Target` (and
+  `ref IeeeFlags`) through instead. `Target.Round` is already the rounding point that knows
+  formats (`RoundToFormat`).
+- Decimal: `FromDecimalSteps` passes `(mag, exp) => RoundExact(...)` to the certified engine,
+  and `FromDecimalExact` calls `RoundExact`. Both become `target.Round`. The engine accepts when
+  both ends of its interval round to the same value. Rounding is monotone in a format too, so
+  rounding both ends into the format keeps that sound.
+- Hex and binary: `new ApFloat(m, exp, precision, mode)` near the end of the hex path becomes
+  `target.Round` as well.
+- Bounded range means bounded cost: a decimal exponent clearly past 2^(emax+1) is overflow at
+  once, and one clearly below half the smallest subnormal is a signed zero or the smallest
+  subnormal (by mode), with Underflow | Inexact. Use a safe margin on log2(10), and send the
+  grey zone down the ordinary path.
+
+Pitfalls:
+- **Inexact needs exactness, and the certified route doesn't give it**: the engine knows the
+  rounding, not whether the value was already representable. Decide it from the digits:
+  X × 10^n is a dyadic rational iff n ≥ 0 or 5^-n divides X. When it is, the exact route is
+  cheap; compare the result with it. Otherwise the result is inexact (a non-dyadic can't be a
+  binary float).
+- Underflow is judged after rounding (6a's rule). A decimal just under 2^emin can round up to
+  it. `RoundToFormat` does this already, as long as every route ends in `target.Round`.
+- NaN and infinity text raise nothing. Text that isn't a number throws, as now. It doesn't raise
+  Invalid.
+- The job hooks (`ForcedRoute`, `LastRounds`, `LastExact`) are thread-static and the tests rely
+  on them. Keep them meaning the same thing.
+
+Oracles: `double.Parse` and `float.Parse` are correctly rounded in .NET (since Core 3.0), and
+`Half.Parse` should be, since it shares their code. Confirm that against `EncodeRational` before
+leaning on it. Then check all three bit for bit on text crowded at the subnormal and overflow edges, at
+halfway points written out in full (e.g. 2^-1075 to every digit), and with long digit strings.
+`FloatOracle.EncodeRational` on the text's exact rational (digits × 10^exp) covers every mode
+and the 6-bit formats. `FloatOracle.RoundingFlags` predicts the flags. Remember the session-4
+lesson: force the engine's route (`ForcedRoute`) so a mutation can't hide behind the default
+one.
+
+Mutations to plan: the engine's ends rounded to the precision rather than into the format (a
+double rounding), the early-out margins too tight, Inexact taken from the engine instead of from
+exactness, hex text skipping the format, tininess judged before rounding.
+
 ### The rest (from the reference-mode plan's old session 6; see "Order of work" for where each now goes)
 - ~~IEEE status flags: inexact, overflow, underflow, invalid, divide-by-zero.~~ Done in 6a.
 - `Parse` into an `IeeeFormat`: a bounded range means bounded cost, so 1e400 → ∞ in binary64
@@ -350,9 +416,9 @@ below a×b (the gap shortcut from Add applies). Mutation plans per piece, as bef
   wanted, not placed yet).
 
 ## ApFloat — later
-- [ ] `FusedMultiplyAdd` (exact a×b + c, round once — nearly free here), `Sqrt`
+- [x] `FusedMultiplyAdd` (exact a×b + c, round once — nearly free here), `Sqrt`
       (needs `ApInt` integer square root), `Floor`/`Ceiling`/`Truncate`/`Round`, IEEE
-      remainder. (Order item 3.)
+      remainder. (Order item 3: done 2026-10-11, sessions 6b and 6c.)
 - [ ] Transcendentals (exp, log, sin, π) — need error bounds (Ziv's retry strategy)
       to stay correctly rounded. A project of its own; session 4's engine is the start of it.
       (Order item 8.)
@@ -369,7 +435,7 @@ below a×b (the gap shortcut from Add applies). Mutation plans per piece, as bef
 ## Later
 - [ ] Bitwise operators on `ApInt` (`&`, `|`, `^`, `~`) — two's-complement
       semantics for negatives, to match `BigInteger`. (Order item 5.)
-- [ ] `Pow`, `ModPow`, `Gcd` (order item 5); integer `Sqrt` (order item 3, for `ApFloat.Sqrt`).
+- [ ] `Pow`, `ModPow`, `Gcd` (order item 5). (Integer `Sqrt` and `SqrtRem` came with 6c.)
 - [ ] Speed, if it ever matters: Karatsuba multiply; a bit-parallel adder that
       doesn't loop per carry. Keep the bitwise-only rule. (Order item 7: the same item as
       the Karatsuba line under the reference mode's "The rest".)

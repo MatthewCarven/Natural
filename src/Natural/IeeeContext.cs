@@ -13,7 +13,7 @@ public enum IeeeFlags
     Overflow = 4,
     /// <summary>A finite non-zero value divided by zero: the result is an exact infinity.</summary>
     DivideByZero = 8,
-    /// <summary>No useful result: 0 × ∞, ∞ − ∞, 0 / 0, ∞ / ∞. The result is NaN.</summary>
+    /// <summary>No useful result: 0 × ∞, ∞ − ∞, 0 / 0, ∞ / ∞, the square root of a negative. The result is NaN.</summary>
     Invalid = 16,
 }
 
@@ -107,6 +107,15 @@ public sealed class IeeeContext
     {
         IeeeFlags flags = Flags;
         ApFloat r = ApFloat.FusedMultiplyAdd(a, b, c, _target, _mode, ref flags);
+        Flags = flags;
+        return r;
+    }
+
+    /// <summary>√x, rounded once into the target. Invalid below zero (√(−0) is −0, and fine).</summary>
+    public ApFloat Sqrt(ApFloat x)
+    {
+        IeeeFlags flags = Flags;
+        ApFloat r = ApFloat.Sqrt(x, _target, _mode, ref flags);
         Flags = flags;
         return r;
     }

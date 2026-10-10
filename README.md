@@ -37,6 +37,7 @@ ApInt big = (ApInt.One << 200) + 1;
 big.ToString("X");     // 100000000000000000000000000000000000000000000000001
 big.ToString();        // 1606938044258990275541962092341162602522202993782792835301377
 (big / 3).ToString();  // 535646014752996758513987364113720867507400997927597611767125
+ApInt.Sqrt(big).ToString();   // 1267650600228229401496703205376, which is 2^100
 ```
 
 Division matches C# (`/` truncates toward zero, `%` takes the dividend's sign) and `>>`
@@ -134,6 +135,9 @@ The rest of IEEE's basic operations, with .NET's names, are on both `ApFloat` an
 double x = 1 + Math.ScaleB(1, -30);
 ApFloat error = ApFloat.FusedMultiplyAdd(x, x, -(x * x), IeeeFormat.Binary64);   // 2^-60: what x * x rounded off
 
+ApFloat.Sqrt(2.0);                                    // 1.4142135623730951: a double in, 53 bits out, as Math.Sqrt
+ApFloat.Sqrt(2, 1000);                                // √2 to 1000 bits
+
 ApFloat.Floor(-2.5);                                  // -3
 ApFloat.Round(2.5);                                   // 2: ties to even, as Math.Round
 ApFloat.Round(2.5, MidpointRounding.AwayFromZero);    // 3
@@ -142,10 +146,14 @@ ApFloat.Ieee754Remainder(7, 2);                       // -1: 7/2 = 3.5 rounds to
 var ieee = new IeeeContext(IeeeFormat.Binary64, RoundingMode.TowardPositive);
 ieee.RoundToIntegral(2.5);                            // 3, and Inexact
 ieee.Convert(ApFloat.Parse("0.1"));                   // 0.1 rounded up into a double, and Inexact again
+ieee.Sqrt(-1);                                        // NaN, and Invalid
 ```
 
 Rounding to an integer is exact, at the value's own precision. The remainder is exact too,
 however far apart the exponents are: `Ieee754Remainder` of 2^(10^12) by 3 takes no time.
+The square root is the integer root of the scaled significand (`ApInt.Sqrt`, worked digit by
+digit, two bits at a time), with the remainder as the sticky bit. Its cost depends on the
+precision asked for, not on the operand's.
 
 ## Text
 
@@ -235,7 +243,7 @@ that yield-returns the work it just did can be a job.
 
 ## How it is tested
 
-615 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
+630 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
 with the thing under test:
 
 - **`BigInteger`**, converted through raw magnitude bytes so the arithmetic tests don't
@@ -258,7 +266,7 @@ result is computed exactly and rounded exactly once, at a precision you choose.
 ## Build
 
 ```
-dotnet test Natural.slnx                                        # 615 tests
+dotnet test Natural.slnx                                        # 630 tests
 dotnet run -c Release tests/bench/timing.cs                     # decimal text timings
 ```
 
@@ -276,7 +284,7 @@ src/Natural/            the library
   ApFloat.Ieee.cs       one encoder/decoder for any IeeeFormat
   ApFloat.Text.cs       decimal, hex and binary text
   ApFloat.Certified.cs  the certified interval engine
-  ApFloat.Operations.cs fused multiply-add, rounding to integers, the remainder
+  ApFloat.Operations.cs fused multiply-add, square root, rounding to integers, the remainder
   ApFloat.Jobs.cs       StartParse and StartFormat: text as a job, and its certificate
   IeeeFormat.cs         an IEEE format as (exponent bits, precision)
   IeeeContext.cs        the IEEE status flags, and a context that raises them
@@ -289,9 +297,9 @@ Natural_Playground/     a WinForms calculator that takes results apart
 ## Status
 
 Arbitrary-precision integers and binary floats are implemented and tested, with IEEE status
-flags, fused multiply-add, rounding to integers and the remainder, and long parsing and
-formatting run as resumable jobs. Not yet built, in the order they are planned: square roots
-(`ApInt` and `ApFloat`); parsing into an `IeeeFormat`; `ApInt` bitwise
+flags, fused multiply-add, square roots (`ApInt` and `ApFloat`), rounding to integers and the
+remainder, and long parsing and formatting run as resumable jobs. Not yet built, in the order
+they are planned: parsing into an `IeeeFormat`; `ApInt` bitwise
 operators then `Pow`/`ModPow`/`Gcd`; generic math interfaces; speed; transcendentals.
 
 See `TODO.md` for the full list and `CLAUDE.md` for the layout and conventions in more

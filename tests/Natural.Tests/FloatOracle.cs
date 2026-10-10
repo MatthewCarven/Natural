@@ -80,6 +80,40 @@ internal static class FloatOracle
         return flags;
     }
 
+    /// <summary>floor(√n) for n ≥ 0, by Newton's method: nothing like ApInt's digit-by-digit root.</summary>
+    public static BigInteger IntegerSqrt(BigInteger n)
+    {
+        if (n.Sign < 0) throw new ArgumentOutOfRangeException(nameof(n));
+        if (n.IsZero) return 0;
+        // Start at or above the root; from there each step falls, until it would rise.
+        BigInteger x = BigInteger.One << (int)((n.GetBitLength() + 1) / 2);
+        while (true)
+        {
+            BigInteger y = (x + n / x) >> 1;
+            if (y >= x) return x;
+            x = y;
+        }
+    }
+
+    /// <summary>
+    /// A rational standing in for √x (x finite, ≥ 0): the root itself when it's rational, and
+    /// otherwise one that rounds the same way at every precision below <paramref name="bits"/>,
+    /// in every mode and under any exponent floor. Take a = floor(√x × 2^t) with at least that many
+    /// bits; √x lies strictly inside (a, a + 1)/2^t, and every rounding boundary at such a
+    /// precision is a multiple of 2^-t, so (2a + 1)/2^(t+1) rounds and compares exactly as √x does.
+    /// </summary>
+    public static (BigInteger Num, BigInteger Den) SqrtOf(ApFloat x, int bits)
+    {
+        var (num, den) = ToRational(x);
+        if (num.IsZero) return (0, 1);
+        long j = (long)den.GetBitLength() - 1;             // den = 2^j
+        if ((j & 1) != 0) { num <<= 1; j++; }              // √(num / 4^h) = √num / 2^h
+        long k = Math.Max(0, (2L * bits - (long)num.GetBitLength() + 1) / 2);
+        BigInteger n = num << (int)(2 * k), a = IntegerSqrt(n);
+        int t = (int)(j / 2 + k);
+        return a * a == n ? (a, BigInteger.One << t) : (2 * a + 1, BigInteger.One << (t + 1));
+    }
+
     /// <summary>Compares num / den with 2^k.</summary>
     private static int CompareWithPowerOfTwo(BigInteger num, BigInteger den, long k) =>
         k >= 0 ? num.CompareTo(den << (int)k) : (num << (int)-k).CompareTo(den);

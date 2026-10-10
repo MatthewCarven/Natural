@@ -175,6 +175,51 @@ internal static class Magnitude
         return Trim(quotient);
     }
 
+    /// <summary>
+    /// Integer square root, digit by digit -- the pencil-and-paper method, in base 2. Bring the
+    /// radicand's bits down two at a time, top pair first, into a running remainder. With the
+    /// root so far r, the next root bit is 1 when the remainder is at least 4r + 1, because
+    /// (2r + 1)² = 4r² + 4r + 1: subtract it and append a 1; otherwise append a 0. As in
+    /// DivRem, each digit is 0 or 1, so nothing is guessed. Returns floor(√n), and n − root²
+    /// in <paramref name="remainder"/> (zero exactly when n is a square).
+    /// </summary>
+    internal static uint[] Sqrt(uint[] n, out uint[] remainder)
+    {
+        // The root has one bit per pair. The remainder is at most 2r (n's prefix is below
+        // (r + 1)²), so with a pair brought in it's under 8r + 4: three bits more than the root,
+        // which the extra limb holds. Root, remainder and the trial 4r + 1 are worked in place.
+        long pairs = (BitLength(n) + 1) >> 1;
+        int rootLimbs = (int)((pairs + 31) >> 5);
+        var root = new uint[rootLimbs];
+        var rem = new uint[rootLimbs + 1];
+        var trial = new uint[rootLimbs + 1];
+
+        for (long i = pairs - 1; i >= 0; i--)
+        {
+            long at = i << 1;                                  // even, so a pair never straddles two limbs
+            ShiftLeftInPlace(rem, 2, (n[at >> 5] >> (int)(at & 31)) & 3);
+            FourTimesPlusOne(root, trial);
+            bool fits = CompareZeroExtended(rem, trial) >= 0;
+            if (fits) SubtractInPlace(rem, trial);
+            ShiftLeftOneInPlace(root, fits ? 1u : 0u);
+        }
+
+        remainder = Trim(rem);
+        return Trim(root);
+    }
+
+    /// <summary>trial = (r &lt;&lt; 2) | 1, where trial is one limb longer than r.</summary>
+    private static void FourTimesPlusOne(uint[] r, uint[] trial)
+    {
+        uint spill = 1;
+        for (int i = 0; i < r.Length; i++)
+        {
+            trial[i] = (r[i] << 2) | spill;
+            spill = r[i] >> 30;
+        }
+        trial[r.Length] = spill;
+    }
+
     /// <summary>a = (a &lt;&lt; 1) | bit, in place; the bit shifted off the top is dropped.</summary>
     private static void ShiftLeftOneInPlace(uint[] a, uint bit)
     {
@@ -183,6 +228,17 @@ internal static class Magnitude
             uint x = a[i];
             a[i] = (x << 1) | bit;
             bit = x >> 31;
+        }
+    }
+
+    /// <summary>a = (a &lt;&lt; bits) | low, in place, for 1 &lt;= bits &lt; 32 and low below 2^bits; the top bits are dropped.</summary>
+    private static void ShiftLeftInPlace(uint[] a, int bits, uint low)
+    {
+        for (int i = 0; i < a.Length; i++)
+        {
+            uint x = a[i];
+            a[i] = (x << bits) | low;
+            low = x >> (32 - bits);
         }
     }
 

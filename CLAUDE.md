@@ -15,7 +15,8 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   (trimmed; zero is the empty array). `FullAdd` is the one-word ripple adder
   (XOR = sum without carries, AND = carries generated, shift and repeat);
   subtract is `a + ~b + 1`; multiply is shift-and-add; divide is restoring
-  binary long division (shift in a bit, subtract if it fits), in place.
+  binary long division (shift in a bit, subtract if it fits), in place; the square root is
+  the same digit by digit, two bits at a time (subtract 4r + 1 if it fits), in place too.
 - `src/Natural/ApInt.cs` — the public struct: sign + magnitude, operators,
   conversions, comparison. `default(ApInt)` is zero; there is no negative zero.
 - `src/Natural/ApInt.Text.cs` — parse (decimal via `x*10 = (x<<3)+(x<<1)`, hex,
@@ -27,6 +28,9 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   which the byte encoder also uses). The operators use the precision form.
 - `src/Natural/ApFloat.Operations.cs` — IEEE's other operations, with .NET's names (generic math
   will ask for them): `FusedMultiplyAdd` (exact product, then `Add`'s core: one rounding),
+  `Sqrt` (the integer root of the significand scaled to 2(p + 2) bits and an even exponent, the
+  remainder as the sticky bit; a longer significand is shifted down into the sticky bit, so the
+  cost follows the precision asked for),
   `Floor`/`Ceiling`/`Truncate`/`Round` (+ `MidpointRounding`; exact, at x's precision, which
   always fits), and `Ieee754Remainder` (exact, at the larger precision; X mod 2Y gives the
   remainder and the quotient's parity, with 2^k mod 2Y by square-and-multiply, so 2^(10^12)
@@ -86,6 +90,10 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   `FloatOracle.RoundingFlags` is that predictor, shared. `IeeeOperationsTests.cs` checks 6b's
   operations against the hardware (`Math.FusedMultiplyAdd`, `Math.Round(x, MidpointRounding)`,
   `double.Ieee754Remainder`) bit for bit, and against exact rationals at any precision.
+  `SqrtTests.cs` checks the integer root against BigInteger Newton (`FloatOracle.IntegerSqrt`) and
+  the float root against `Math.Sqrt`, `MathF.Sqrt` and every `Half`. In every mode and format it
+  uses `FloatOracle.SqrtOf`, a rational that rounds exactly as the irrational root does. A
+  squaring check (x between the squared rounding boundaries around the result) takes no root at all.
   `JobTests.cs` checks `Natural.Jobs` on counting jobs; `ParseJobTests.cs` and
   `FormatJobTests.cs` check that a job gives what `Parse`/`ToString` gives however it's stepped,
   and that progress tracks the work. Cap every `while (!job.Continue(...))` loop in a test, or a

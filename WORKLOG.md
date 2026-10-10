@@ -663,3 +663,65 @@ case silent, a NaN addend checked late; Floor truncating, Round tying away, half
 tie to odd, its zero unsigned, 2^k off by one, the parity lost (mod Y not 2Y), an infinite
 divisor not special, Invalid silent, a squaring skipped; the context's RoundToIntegral not
 inexact, or ignoring its mode.
+
+## 2026-10-11 — Session 6c: square roots
+
+The brief ran as written. Order item 3 is done.
+
+- **`ApInt.Sqrt(n)`** (floor) and **`ApInt.SqrtRem(n)`** (root and n − root², like `DivRem`;
+  the remainder is zero exactly for a square). A negative throws `ArithmeticException`.
+  `Magnitude.Sqrt` is the pencil-and-paper method in base 2. It brings the radicand down two
+  bits at a time and appends a 1 to the root r when the remainder holds 4r + 1, which it then
+  subtracts. Everything is done in place, in arrays sized once: the remainder never exceeds 2r,
+  so one limb more than the root holds it. No CPU multiply. `DivRem`'s one-bit shift was left
+  alone (its hot loop); the root has its own shift.
+- **`ApFloat.Sqrt(x)`** at x's precision, plus precision and format overloads, and
+  **`ieee.Sqrt(x)`** on the context: one flagged core, as in 6b. x = m × 2^e is scaled to M of
+  2(p + 2) bits or one more, with an even exponent. The integer root then has p + 2 bits or
+  more, and a non-zero remainder is the sticky bit. A significand longer than that is shifted
+  *down* instead, and since m is odd that always drops a 1, which is sticky too. So the cost
+  follows the precision asked for, not x's: √ of a 100,000-bit value to 53 bits is cheap.
+  √(±0) = ±0 with no flag, √(+∞) = +∞, √ of anything below zero (−∞ included) is NaN and Invalid,
+  and NaN is quiet.
+- **Cost**: quadratic, like division. Against `Divide` of two full-precision operands at the same
+  precision: 0.03 against 0.02 ms at 53 bits, 0.27 against 0.10 at 256, 6.6 against 4.7 at 4096,
+  107 against 73 ms at 16,384. That's about twice the limb passes per bit (shift, trial, compare,
+  subtract, shift the root). Order item 7's territory if it ever matters.
+
+**Tests**: 615 → 630, `SqrtTests` (15). The integer root checks every n to 5000, 3000 biased
+random values, squares and their neighbours (k² − 1, k², k² + 2k), 2^j and 2^j ± 1 to j = 300, and
+a 12,800-bit value, all against BigInteger Newton (`FloatOracle.IntegerSqrt`) and r² ≤ n < (r + 1)².
+The float root:
+- matches `Math.Sqrt` bit for bit on 20,000 doubles (subnormals, exact squares, and "hard"
+  squares: s² rounded, for s of 53 bits or an odd 54, so the root sits a hair from a double or
+  a midpoint). Flags too: Inexact exactly when r² ≠ x.
+- matches `MathF.Sqrt` on 20,000 floats, and `Half.Sqrt` on all 65,536 halves. (.NET's goes
+  through float, and 24 ≥ 2 × 11 + 2, so its double rounding is harmless.)
+- in every mode, at precisions 1–200 and in four formats, matches `FloatOracle.SqrtOf`, flags
+  included. `SqrtOf` is the root itself when it's rational, otherwise (2a + 1)/2^(t+1) with
+  a = floor(√x · 2^t) of p + 8 bits or more. √x lies strictly inside (a, a + 1)/2^t, and every
+  rounding boundary is a multiple of 2^-t, so that rational rounds, and compares with any
+  boundary, exactly as √x does. The radicands include exact midpoints' squares (true ties) and
+  near-ties.
+- passes a second check that takes no root at all: x must lie between the squares of the rounding
+  boundaries around r (the neighbours for a directed mode, the midpoints for nearest, and on a
+  midpoint r must be the even one).
+- passes every value of three 6-bit formats in every mode. With two exponent bits the smallest
+  normal is 1, so the roots of subnormals are tiny and Underflow is exercised.
+- handles 2^(±10^12) exponents (√(m·2^2k) = √m·2^k, and odd exponents), overflow and underflow
+  into binary64 from outside its range (an exact subnormal root raises nothing), a 100,000-bit
+  radicand at 53 bits, and √(3^20000) exactly.
+
+**Mutation check**: 21 mutations: 20 red, and one survivor, which is equivalent. Red for the
+integer root: trial 4r or 2r + 1, one bit of each pair dropped, fits only when strictly above, the
+top pair missed for an odd bit length, the remainder a limb short, the shift carrying the wrong
+bits between limbs, and a negative not throwing. Red for the float root: the exponent's parity
+not fixed, the sticky bit dropping the remainder, or dropping the shifted-out bits (only the
+100,000-bit test caught that one: it matters only when the kept top half is a perfect square), a
+root of p bits, √(−0) losing its sign or raising Invalid, a negative silent, √(−∞) = +∞, NaN
+raising Invalid, `Sqrt(x)` at the default precision, and the context ignoring its mode or not
+sticky (I added the stickiness check before the battery, once I saw nothing tested it).
+**The survivor is a root of p + 1 bits**, which is enough. The half bit is still a root bit, and
+every rounding boundary falls on a whole unit of the root, so none lies strictly between root
+and root + 1, where the true value is. p + 2 is one bit of slack, kept to match `Divide`, whose
+p + 2 is the same slack. The machine was in its fast phase (12 s a run).

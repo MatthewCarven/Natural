@@ -155,6 +155,23 @@ public readonly partial struct ApInt : IEquatable<ApInt>, IComparable<ApInt>, IC
     /// <summary>Remainder with the dividend's sign, like C#: -7 % 2 is -1.</summary>
     public static ApInt operator %(ApInt a, ApInt b) => DivRem(a, b).Remainder;
 
+    /// <summary>The integer square root: the largest r with r² ≤ n, so Sqrt(99) is 9.</summary>
+    /// <exception cref="ArithmeticException">n is negative.</exception>
+    public static ApInt Sqrt(ApInt n) => SqrtRem(n).Root;
+
+    /// <summary>
+    /// The integer square root and what's left over: n = Root² + Remainder, with
+    /// 0 ≤ Remainder ≤ 2·Root. The remainder is zero exactly when n is a perfect square.
+    /// Worked digit by digit, two bits of n at a time, the way DivRem works one.
+    /// </summary>
+    /// <exception cref="ArithmeticException">n is negative.</exception>
+    public static (ApInt Root, ApInt Remainder) SqrtRem(ApInt n)
+    {
+        if (n._negative) throw new ArithmeticException("A negative integer has no square root.");
+        uint[] root = Magnitude.Sqrt(n.Mag, out uint[] remainder);
+        return (new(root, false), new(remainder, false));
+    }
+
     public static ApInt operator ++(ApInt a) => a + One;
     public static ApInt operator --(ApInt a) => a - One;
 
