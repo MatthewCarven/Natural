@@ -159,16 +159,32 @@ public readonly partial struct ApFloat
     /// rounding toward zero from that side. The result is exactly representable in the format.
     /// Every route into a format comes through here: the encoder and the arithmetic.
     /// </summary>
-    private static ApFloat RoundToFormat(bool negative, uint[] mag, long exp, bool sticky, IeeeFormat format, RoundingMode mode)
+    private static ApFloat RoundToFormat(bool negative, uint[] mag, long exp, bool sticky, IeeeFormat format, RoundingMode mode) =>
+        RoundToFormat(negative, mag, exp, sticky, format, mode, out _);
+
+    /// <summary>
+    /// As above, with the IEEE flags it raises: Inexact when the result differs from the value;
+    /// Overflow (and Inexact) past the largest finite value; Underflow when the result is tiny
+    /// and inexact. Tiny is judged after rounding, as x86 does (IEEE 754 §7.5 allows either):
+    /// the value rounded to the precision with no floor on the exponent is below 2^emin.
+    /// </summary>
+    private static ApFloat RoundToFormat(bool negative, uint[] mag, long exp, bool sticky, IeeeFormat format,
+                                         RoundingMode mode, out IeeeFlags flags)
     {
+        flags = IeeeFlags.None;
         int precision = format.Precision;
-        long emax = format.MaxExponent;
-        long minExp = format.MinExponent - (precision - 1);     // the smallest subnormal is 2^minExp
+        long emax = format.MaxExponent, emin = format.MinExponent;
+        long minExp = emin - (precision - 1);     // the smallest subnormal is 2^minExp
         long top = exp + Magnitude.BitLength(mag) - 1;
 
         // Already past the largest binade: overflow, whichever way it rounds.
         if (top <= emax)
         {
+            // Tiny after rounding: below the smallest normal even rounded with no floor. Only a
+            // value just under 2^emin can round up out of it, so only that case needs the rounding.
+            bool tiny = mag.Length != 0 && (top < emin - 1
+                || (top == emin - 1 && RoundExact(negative, mag, exp, sticky, precision, mode).Top < emin));
+
             // Under half the smallest subnormal, only the sign and the fact that it isn't zero
             // can matter (as with Add's gap shortcut), so one bit there stands in for it and
             // huge negative exponents stay cheap. (With sticky set the value is still under
@@ -179,10 +195,15 @@ public readonly partial struct ApFloat
                 exp = minExp - 2;
                 sticky = false;
             }
-            ApFloat r = RoundExact(negative, mag, exp, sticky, precision, mode, minExp);
-            if (r.IsZero || r.Top <= emax) return r;          // in range, or underflowed to a signed zero
+            ApFloat r = RoundExact(negative, mag, exp, sticky, precision, mode, minExp, out bool inexact);
+            if (r.IsZero || r.Top <= emax)                     // in range, or underflowed to a signed zero
+            {
+                if (inexact) flags = tiny ? IeeeFlags.Inexact | IeeeFlags.Underflow : IeeeFlags.Inexact;
+                return r;
+            }
         }
 
+        flags = IeeeFlags.Overflow | IeeeFlags.Inexact;
         bool toInfinity = mode switch
         {
             RoundingMode.ToNearestEven => true,

@@ -25,6 +25,12 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   (compute exact, round once). Each operation takes a precision (unbounded exponent)
   or an `IeeeFormat` (rounded once into that format's range too, via `RoundToFormat`,
   which the byte encoder also uses). The operators use the precision form.
+- `src/Natural/IeeeContext.cs` — `IeeeFlags` and `IeeeContext` (Matthew's choice, 2026-10-10):
+  a target (a format or a precision), a settable rounding mode, and sticky flags. Its methods
+  call ApFloat's flagged cores (`Add`/`Multiply`/`Divide(..., Target, mode, ref IeeeFlags)`);
+  the static methods pass a throwaway. Inexact comes from `RoundExact`; overflow and underflow
+  from `RoundToFormat` (tiny judged after rounding, as x86); invalid and divide-by-zero from
+  the operations' special cases. New operations go on both the static API and the context.
 - `src/Natural/IeeeFormat.cs` — an IEEE binary format as (exponent bits, precision).
   `IeeeFormat.Binary(k)` is binary{k} per IEEE 754-2008 §3.6. Its width formula is
   done in integers, from k^8's bit length.
@@ -66,6 +72,8 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   (no code shared with `RoundExact`), an IEEE encoder, and biased random bit patterns.
   The hardware (`double`, `float`, `Half`) is the second oracle. `CertifiedTests.cs` pins
   values for exponents like 10^7 that were computed offline with exact Python integers.
+  `IeeeFlagsTests.cs` predicts every flag from the exact rational and the oracle's rounding
+  with no exponent floor (every pair in three 6-bit formats, every mode, is the backstop).
   `JobTests.cs` checks `Natural.Jobs` on counting jobs; `ParseJobTests.cs` and
   `FormatJobTests.cs` check that a job gives what `Parse`/`ToString` gives however it's stepped,
   and that progress tracks the work. Cap every `while (!job.Continue(...))` loop in a test, or a

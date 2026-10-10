@@ -102,6 +102,32 @@ The 53-bit *operators* (unbounded exponent) still round a second time when a res
 among `double`'s subnormals — roughly 1% of products and quotients can differ in the last
 place. That is documented on the type; the format overloads are the fix.
 
+## IEEE status flags
+
+IEEE 754's five flags (inexact, underflow, overflow, divide-by-zero, invalid) come from an
+`IeeeContext`: an object you own that holds the target (a format, or a precision), the
+rounding mode, and the flags, which stay raised until you clear them. The static methods give
+the same results without flags.
+
+```csharp
+var ieee = new IeeeContext(IeeeFormat.Binary64);   // or new IeeeContext(precision: 256)
+
+ApFloat third = ieee.Divide(1.0, 3.0);
+IeeeFlags flags = ieee.Flags;                      // Inexact
+
+ieee.Divide(1.0, 0.0);                             // +∞, exactly
+flags = ieee.Flags;                                // Inexact, DivideByZero: they stay raised
+
+ieee.ClearFlags();
+ieee.Mode = RoundingMode.TowardZero;
+ieee.Multiply(1e300, 1e300);                       // the largest finite double, toward zero
+flags = ieee.Flags;                                // Inexact, Overflow
+```
+
+Underflow means tiny and inexact, with tiny judged after rounding (as x86 does; IEEE allows
+either). With a precision the exponent is unbounded, so only inexact, divide-by-zero and
+invalid can be raised.
+
 ## Text
 
 Formatting goes from the **exact** value and rounds once, in the given mode, ties to even.
@@ -190,7 +216,7 @@ that yield-returns the work it just did can be a job.
 
 ## How it is tested
 
-581 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
+592 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
 with the thing under test:
 
 - **`BigInteger`**, converted through raw magnitude bytes so the arithmetic tests don't
@@ -213,7 +239,7 @@ result is computed exactly and rounded exactly once, at a precision you choose.
 ## Build
 
 ```
-dotnet test Natural.slnx                                        # 581 tests
+dotnet test Natural.slnx                                        # 592 tests
 dotnet run -c Release tests/bench/timing.cs                     # decimal text timings
 ```
 
@@ -233,6 +259,7 @@ src/Natural/            the library
   ApFloat.Certified.cs  the certified interval engine
   ApFloat.Jobs.cs       StartParse and StartFormat: text as a job, and its certificate
   IeeeFormat.cs         an IEEE format as (exponent bits, precision)
+  IeeeContext.cs        the IEEE status flags, and a context that raises them
   Jobs/Job.cs           Natural.Jobs: long work stepped by units or time
 tests/Natural.Tests/    xUnit, and the oracles
 tests/bench/            timing.cs, a file-based app
@@ -241,11 +268,10 @@ Natural_Playground/     a WinForms calculator that takes results apart
 
 ## Status
 
-Arbitrary-precision integers and binary floats are implemented and tested, and long parsing and
-formatting run as resumable jobs. Not yet built, in the order they are planned: the IEEE
-operations `ApFloat` still lacks
-(FMA, floor/ceiling/truncate/round, remainder, `ApInt` square root, `ApFloat.Sqrt`), with
-IEEE status flags landing before them; parsing into an `IeeeFormat`; `ApInt` bitwise
+Arbitrary-precision integers and binary floats are implemented and tested, with IEEE status
+flags, and long parsing and formatting run as resumable jobs. Not yet built, in the order they
+are planned: the IEEE operations `ApFloat` still lacks (FMA, floor/ceiling/truncate/round,
+remainder, `ApInt` square root, `ApFloat.Sqrt`); parsing into an `IeeeFormat`; `ApInt` bitwise
 operators then `Pow`/`ModPow`/`Gcd`; generic math interfaces; speed; transcendentals.
 
 See `TODO.md` for the full list and `CLAUDE.md` for the layout and conventions in more

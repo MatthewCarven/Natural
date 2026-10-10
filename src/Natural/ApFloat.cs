@@ -142,8 +142,14 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
     /// have. IEEE formats need it for subnormals, where precision shrinks near zero.
     /// </summary>
     private static ApFloat RoundExact(bool negative, uint[] mag, long exp, bool sticky, int precision,
-                                      RoundingMode mode, long minExp = long.MinValue)
+                                      RoundingMode mode, long minExp = long.MinValue) =>
+        RoundExact(negative, mag, exp, sticky, precision, mode, minExp, out _);
+
+    /// <summary>As above, and whether the result differs from the value: IEEE's inexact.</summary>
+    private static ApFloat RoundExact(bool negative, uint[] mag, long exp, bool sticky, int precision,
+                                      RoundingMode mode, long minExp, out bool inexact)
     {
+        inexact = false;
         if (mag.Length == 0)
         {
             if (sticky) throw new InvalidOperationException("Sticky bit with a zero significand.");
@@ -168,6 +174,7 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
         uint[] kept = Magnitude.ShiftRight(mag, drop);
         bool half = Magnitude.TestBit(mag, drop - 1);                       // the first bit dropped
         bool rest = sticky || Magnitude.AnyBitsBelow(mag, drop - 1);         // anything below it
+        inexact = half || rest;
         bool roundUp = mode switch
         {
             RoundingMode.ToNearestEven => half && (rest || Magnitude.TestBit(kept, 0)),
@@ -247,9 +254,10 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
 
     /// <summary>
     /// Where a result is rounded to: a precision, with an unbounded exponent, or an IEEE
-    /// format, whose range adds subnormals near zero and overflow at the top.
+    /// format, whose range adds subnormals near zero and overflow at the top. Internal for
+    /// <see cref="IeeeContext"/>, which holds one.
     /// </summary>
-    private readonly struct Target
+    internal readonly struct Target
     {
         public readonly int Precision;
         public readonly IeeeFormat? Format;
@@ -272,18 +280,63 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
             return new(format.Precision, format);
         }
 
-        public ApFloat Round(bool negative, uint[] mag, long exp, bool sticky, RoundingMode mode) =>
-            Format is { } format
-                ? RoundToFormat(negative, mag, exp, sticky, format, mode)
-                : RoundExact(negative, mag, exp, sticky, Precision, mode);
+        /// <summary>Rounds into the target, raising Inexact (and, for a format, Underflow or Overflow) in flags.</summary>
+        public ApFloat Round(bool negative, uint[] mag, long exp, bool sticky, RoundingMode mode, ref IeeeFlags flags)
+        {
+            if (Format is { } format)
+            {
+                ApFloat r = RoundToFormat(negative, mag, exp, sticky, format, mode, out IeeeFlags raised);
+                flags |= raised;
+                return r;
+            }
+            ApFloat result = RoundExact(negative, mag, exp, sticky, Precision, mode, long.MinValue, out bool inexact);
+            if (inexact) flags |= IeeeFlags.Inexact;
+            return result;
+        }
     }
 
+    // The operations, with IEEE's flags raised in `flags` (IeeeContext's way in), and without.
+
     private static ApFloat Add(ApFloat a, ApFloat b, Target target, RoundingMode mode)
+    {
+        IeeeFlags ignored = IeeeFlags.None;
+        return Add(a, b, target, mode, ref ignored);
+    }
+
+    private static ApFloat Multiply(ApFloat a, ApFloat b, Target target, RoundingMode mode)
+    {
+        IeeeFlags ignored = IeeeFlags.None;
+        return Multiply(a, b, target, mode, ref ignored);
+    }
+
+    private static ApFloat Divide(ApFloat a, ApFloat b, Target target, RoundingMode mode)
+    {
+        IeeeFlags ignored = IeeeFlags.None;
+        return Divide(a, b, target, mode, ref ignored);
+    }
+
+    /// <summary>x rounded into the target, with flags: WithFormat or WithPrecision.</summary>
+    internal static ApFloat Round(ApFloat x, Target target, RoundingMode mode, ref IeeeFlags flags) => x._kind switch
+    {
+        Kind.Finite => target.Round(x._negative, x.Mant, x._exp, false, mode, ref flags),
+        Kind.Zero => ZeroOf(x._negative, target.Precision),
+        Kind.Infinity => InfinityOf(x._negative, target.Precision),
+        _ => NaNOf(target.Precision),
+    };
+
+    internal static ApFloat Add(ApFloat a, ApFloat b, Target target, RoundingMode mode, ref IeeeFlags flags)
     {
         int precision = target.Precision;
         if (a.IsNaN || b.IsNaN) return NaNOf(precision);
         if (a.IsInfinity)
-            return b.IsInfinity && a._negative != b._negative ? NaNOf(precision) : InfinityOf(a._negative, precision);
+        {
+            if (b.IsInfinity && a._negative != b._negative)
+            {
+                flags |= IeeeFlags.Invalid;   // ∞ − ∞
+                return NaNOf(precision);
+            }
+            return InfinityOf(a._negative, precision);
+        }
         if (b.IsInfinity) return InfinityOf(b._negative, precision);
         if (a.IsZero && b.IsZero)
         {
@@ -291,8 +344,8 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
             bool negative = a._negative == b._negative ? a._negative : mode == RoundingMode.TowardNegative;
             return ZeroOf(negative, precision);
         }
-        if (a.IsZero) return target.Round(b._negative, b.Mant, b._exp, false, mode);
-        if (b.IsZero) return target.Round(a._negative, a.Mant, a._exp, false, mode);
+        if (a.IsZero) return target.Round(b._negative, b.Mant, b._exp, false, mode, ref flags);
+        if (b.IsZero) return target.Round(a._negative, a.Mant, a._exp, false, mode, ref flags);
 
         // Let a be the one with the higher leading bit.
         long topA = a.Top, topB = b.Top;
@@ -320,35 +373,52 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
         uint[] y = Magnitude.ShiftLeft(mb, eb - low);
 
         if (a._negative == b._negative)
-            return target.Round(a._negative, Magnitude.Add(x, y), low, false, mode);
+            return target.Round(a._negative, Magnitude.Add(x, y), low, false, mode, ref flags);
 
         int cmp = Magnitude.Compare(x, y);
         if (cmp == 0) return ZeroOf(mode == RoundingMode.TowardNegative, precision);   // x - x is +0 (or -0 rounding down)
         return cmp > 0
-            ? target.Round(a._negative, Magnitude.Subtract(x, y), low, false, mode)
-            : target.Round(b._negative, Magnitude.Subtract(y, x), low, false, mode);
+            ? target.Round(a._negative, Magnitude.Subtract(x, y), low, false, mode, ref flags)
+            : target.Round(b._negative, Magnitude.Subtract(y, x), low, false, mode, ref flags);
     }
 
-    private static ApFloat Multiply(ApFloat a, ApFloat b, Target target, RoundingMode mode)
+    internal static ApFloat Multiply(ApFloat a, ApFloat b, Target target, RoundingMode mode, ref IeeeFlags flags)
     {
         int precision = target.Precision;
         bool negative = a._negative ^ b._negative;
         if (a.IsNaN || b.IsNaN) return NaNOf(precision);
         if (a.IsInfinity || b.IsInfinity)
-            return a.IsZero || b.IsZero ? NaNOf(precision) : InfinityOf(negative, precision);   // 0 × ∞ is NaN
+        {
+            if (a.IsZero || b.IsZero)
+            {
+                flags |= IeeeFlags.Invalid;   // 0 × ∞
+                return NaNOf(precision);
+            }
+            return InfinityOf(negative, precision);
+        }
         if (a.IsZero || b.IsZero) return ZeroOf(negative, precision);
 
-        return target.Round(negative, Magnitude.Multiply(a.Mant, b.Mant), checked(a._exp + b._exp), false, mode);
+        return target.Round(negative, Magnitude.Multiply(a.Mant, b.Mant), checked(a._exp + b._exp), false, mode, ref flags);
     }
 
-    private static ApFloat Divide(ApFloat a, ApFloat b, Target target, RoundingMode mode)
+    internal static ApFloat Divide(ApFloat a, ApFloat b, Target target, RoundingMode mode, ref IeeeFlags flags)
     {
         int precision = target.Precision;
         bool negative = a._negative ^ b._negative;
         if (a.IsNaN || b.IsNaN) return NaNOf(precision);
-        if (a.IsInfinity) return b.IsInfinity ? NaNOf(precision) : InfinityOf(negative, precision);
+        if (a.IsInfinity)
+        {
+            if (!b.IsInfinity) return InfinityOf(negative, precision);
+            flags |= IeeeFlags.Invalid;       // ∞ / ∞
+            return NaNOf(precision);
+        }
         if (b.IsInfinity) return ZeroOf(negative, precision);
-        if (b.IsZero) return a.IsZero ? NaNOf(precision) : InfinityOf(negative, precision);    // x / 0 is ±∞; 0 / 0 is NaN
+        if (b.IsZero)
+        {
+            // x / 0 is an exact ±∞, flagged as a division by zero; 0 / 0 has no value at all.
+            flags |= a.IsZero ? IeeeFlags.Invalid : IeeeFlags.DivideByZero;
+            return a.IsZero ? NaNOf(precision) : InfinityOf(negative, precision);
+        }
         if (a.IsZero) return ZeroOf(negative, precision);
 
         // Scale the dividend up so the integer quotient has at least precision + 2 bits:
@@ -358,7 +428,7 @@ public readonly partial struct ApFloat : IEquatable<ApFloat>, IComparable<ApFloa
         long shift = Math.Max(0, precision + 2 + nb - na);
         uint[] quotient = Magnitude.DivRem(Magnitude.ShiftLeft(a.Mant, shift), b.Mant, out uint[] remainder);
         long exp = checked(a._exp - shift - b._exp);
-        return target.Round(negative, quotient, exp, remainder.Length != 0, mode);
+        return target.Round(negative, quotient, exp, remainder.Length != 0, mode, ref flags);
     }
 
     // ------------------------------------------------------------------

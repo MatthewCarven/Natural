@@ -4,12 +4,13 @@
 1. ~~**Session 4**: the certified interval engine.~~ Done 2026-09-30.
 2. **Session 5**: resumable jobs, built on 4. ~~5a (`Natural.Jobs`, `StartParse`)~~ done
    2026-10-09; ~~5b (`StartFormat`, double dabble as steps)~~ done 2026-10-10. 5c (the exact
-   route as steps) is left, and measured cheap: **recommend parking it** and going on to 3.
-   Ask Matthew at the start of the next session which he wants.
+   route as steps) is left, and measured cheap: parked (Matthew went on to session 6,
+   2026-10-10).
 3. **The IEEE operations ApFloat still lacks**: FMA, Floor/Ceiling/Truncate/Round, IEEE
    remainder, and `ApInt` integer square root, then `ApFloat.Sqrt`. The **IEEE status
    flags** go in first, in the same session, so each new operation reports them from day one.
-   **Next** (unless Matthew picks 5c): the session 6 brief is below, after session 5.
+   ~~6a (the flags, `IeeeContext`)~~ done 2026-10-10. **Next: 6b** (FMA, rounding to
+   integral, remainder); brief below, after session 5. Then 6c (square roots).
 4. **Parse into an `IeeeFormat`**: small, and for very wide formats it uses 4's engine.
 5. **`ApInt` bitwise operators** (`&`, `|`, `^`, `~`), then `Pow`, `ModPow`, `Gcd`.
 6. **Generic math**: `INumber<ApInt>` / `IBinaryInteger<ApInt>` (needs 5), `INumber<ApFloat>`
@@ -239,13 +240,36 @@ them in a controlled and safe way". So the budget, the work-unit count,
 `Continue`/`Complete`/`Progress` and the certificate belong in a general piece that a parse or
 a format plugs into.
 
-### Session 6 — IEEE status flags, then the missing operations (brief for a fresh chat)
-Order of work item 3. Big, so proposed as **6a** (flags), **6b** (FMA, round to integral,
+### Session 6 — IEEE status flags, then the missing operations
+Order of work item 3. Big, so split as **6a** (flags), **6b** (FMA, round to integral,
 remainder) and **6c** (integer square root, then `ApFloat.Sqrt`). The flags go first so every new
 operation reports them from day one (Matthew's order, 2026-09-30).
 
-**Ask Matthew first** (one question, previews, recommendation first): how flags reach the
-caller. The options:
+#### 6a — done 2026-10-10
+- [x] `IeeeFlags` and `IeeeContext` (`src/Natural/IeeeContext.cs`): `Add`, `Subtract`,
+      `Multiply`, `Divide` and `Round(x)` (convertFormat), into a format or a precision, in the
+      context's `Mode`, raising sticky `Flags`. The static methods are unchanged.
+- [x] Underflow is tiny and inexact, tiny judged after rounding (x86's choice); a value just
+      under 2^emin that rounds up to it at the precision doesn't underflow. Pinned by a test.
+- [x] 581 → 592 tests (every pair of three 6-bit formats, NaN and ∞ included, in every mode,
+      against flags predicted from the exact rational); 15 mutations, all red.
+
+#### 6b — brief for a fresh chat
+Each new operation goes on the static API (precision and `IeeeFormat` overloads, no flags) and
+on `IeeeContext` (with flags), through one flagged core: `internal static ApFloat Op(...,
+Target target, RoundingMode mode, ref IeeeFlags flags)`, rounding through
+`target.Round(..., ref flags)`, the way `Add`/`Multiply`/`Divide` do now. Extend the tests'
+`Expected` (in `IeeeFlagsTests`) with each new operation's invalid cases rather than writing
+a second predictor.
+
+The 6a design notes, kept for reference:
+
+**Answered (Matthew, 2026-10-10): a context object.** `var ctx = new IeeeContext(IeeeFormat.Binary64)`
+(or a precision) holds the target, the rounding mode (settable) and sticky `Flags` (cleared with
+`ClearFlags()`); `ctx.Divide(a, b)`, `ctx.Sqrt(x)` and so on raise them. The static
+`ApFloat.Add/Divide/...` stay as they are, without flags; new operations go on both. (The
+brief had recommended an `out` parameter; reading the code showed it would need the mode written
+out and about 20 overloads, so the recommendation changed before asking.) The options were:
 - **An `out IeeeFlags` on the format overloads** (recommended): `ApFloat.Divide(a, b,
   IeeeFormat.Binary64, mode, out IeeeFlags flags)`. Pure, no hidden state, safe with jobs on
   other threads, easy to test against the oracle. `[Flags] enum IeeeFlags { None, Inexact,
@@ -268,7 +292,7 @@ Where they come from (IEEE 754-2019 §7):
 - The rational oracle (`FloatOracle.Round`) knows exactness, so it can predict every flag.
   .NET doesn't expose the hardware's flags, so the hardware can't be the oracle for them.
 
-6b, each correctly rounded once, `IeeeFormat` and precision overloads, flags included:
+6b's operations, each correctly rounded once, `IeeeFormat` and precision overloads, flags included:
 - `FusedMultiplyAdd(a, b, c)`: the exact product (a significand multiply) plus c, aligned,
   rounded once. Hardware oracle: `Math.FusedMultiplyAdd` at binary64, `MathF` at binary32.
 - `Floor`, `Ceiling`, `Truncate`, `Round` (ties to even, and `MidpointRounding.AwayFromZero`):
@@ -290,7 +314,7 @@ exactly (the sign of zero depends on the mode); the exponent alignment in FMA wh
 below a×b (the gap shortcut from Add applies). Mutation plans per piece, as before.
 
 ### The rest (from the reference-mode plan's old session 6; see "Order of work" for where each now goes)
-- IEEE status flags: inexact, overflow, underflow, invalid, divide-by-zero. (Order item 3.)
+- ~~IEEE status flags: inexact, overflow, underflow, invalid, divide-by-zero.~~ Done in 6a.
 - `Parse` into an `IeeeFormat`: a bounded range means bounded cost, so 1e400 → ∞ in binary64
   at once. (Order item 4.)
 - Karatsuba multiplication and a dedicated squaring, still bitwise, for the exact routes

@@ -574,3 +574,45 @@ the last scaling or read-back. That differs only for R and G (shortest), where t
 whichever candidate check ran last, which nothing relies on and no test can sensibly pin. The
 hooks keep the old meaning (the last decimal conversion done); a job's certificate is the
 meaningful record.
+
+## 2026-10-10 — Session 6a: IEEE status flags, through IeeeContext
+
+Matthew went on to session 6 (5c parked). One question first, how flags reach the caller, and
+he took the recommendation: **a context object**. The brief had recommended an `out
+IeeeFlags` per call, but reading the code changed that before asking. An `out` parameter must
+come before the optional rounding mode, so every flagged call would spell out the mode, and
+every operation would need another overload in both its precision and format forms (about 20
+by the end of session 6). A context is IEEE 754's own model (attributes plus sticky flags),
+with no hidden state.
+
+**`IeeeContext`** (`src/Natural/IeeeContext.cs`): constructed with an `IeeeFormat` or a
+precision, and a rounding mode (`Mode`, settable, checked). `Add`, `Subtract`, `Multiply`,
+`Divide`, and `Round(x)` (IEEE's convertFormat: `WithFormat`/`WithPrecision` with flags). `Flags`
+is sticky and settable (save/restore); `ClearFlags()` lowers them. `IeeeFlags` is a `[Flags]`
+enum of the five.
+
+**Where they come from**: `RoundExact` now reports inexact (a dropped non-zero bit, or the
+sticky bit). `RoundToFormat` reports Overflow (always with Inexact) and Underflow: tiny and
+inexact, tiny judged after rounding, as x86 does. Only a value in the binade just under 2^emin
+can round up out of tininess, so only that case pays for a second rounding. The operations
+raise Invalid (∞ − ∞, 0 × ∞, 0/0, ∞/∞) and DivideByZero (finite non-zero / 0). NaN operands
+raise nothing, since every NaN here is quiet. Each operation has one core taking
+`ref IeeeFlags`. The static methods pass a throwaway and return the same results as before
+(581 tests unchanged).
+
+**Tests**: 581 → 592, `IeeeFlagsTests` (11). Flags are predicted independently from the exact
+rational, the oracle's rounding with no exponent floor (overflow, tininess), and the operand
+kinds. The cases: 20,000 binary64 pairs crowded at the subnormal and overflow edges, specials
+included; every pair of values in three 6-bit formats (NaN and ∞ included) × 4 operations × 4
+modes; precision contexts (never overflow or underflow); 2^-1022 − 2^-1076, which is Inexact
+alone to nearest (it rounds up to the smallest normal) but Underflow toward zero (where
+judging before rounding would say Underflow both times); an exact subnormal product raises
+nothing; convertFormat cases; stickiness, save and restore; the mode; the constructors. The
+README sample was run as written (.NET prints "Inexact, Overflow" in value order).
+
+**Mutation check**: 15 mutations, all red: inexact ignoring the sticky bit or the half bit;
+tininess before rounding, or only below the subnormals; underflow when exact; overflow without
+inexact or without its own flag; 0/0 as a division by zero; each invalid case silent; a
+rounding that overwrote earlier flags; a context that wasn't sticky; precision contexts always
+inexact; the context's mode ignored. The machine was in its slow phase (about 30 s a run,
+against 12 the day before).
