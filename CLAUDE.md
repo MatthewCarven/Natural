@@ -113,3 +113,21 @@ dotnet run -c Release tests/bench/timing.cs            # decimal text timings (-
 - Random test operands are biased to all-ones / all-zero limbs on purpose — that's
   where carry and borrow bugs live. Keep that bias in any new randomized test.
 - Before trusting a new green suite, break the code on purpose once and watch it go red.
+
+## Recipes (the scratchpad dies with each chat; rebuild these from here)
+
+- **Mutation battery**: a Python script in the scratchpad, written with the Write tool. A list
+  of `(name, [(file, old, new), ...])`, each `old` an exact string found exactly once (try `\n`,
+  then `\r\n`). For each: read the bytes, apply, run `dotnet test Natural.slnx --nologo` with
+  `subprocess.run(..., timeout=240)`, report RED (with the failing tests) / green / BUILD ERROR /
+  TIMEOUT, and restore the bytes in a `finally`. Run it with `run_in_background`, in batches
+  under ten minutes (about 10–20 mutations at 12–30 s each), and touch nothing in `src` or
+  `tests` while it runs. Afterwards check the originals are back before committing. A
+  survivor is a hole until shown equivalent; say which in WORKLOG.
+- **Old against new timing**: `git archive --format=tar -o <scratch>/old.tar HEAD src/Natural`,
+  extract with `tar -xf`, then two file-based apps that differ only in their `#:project` line
+  (old copy, live tree), built once with `dotnet build -c Release <file>.cs` and run
+  alternately three times each (`dotnet run -c Release --no-build`). This machine has two
+  speeds; one A-then-B pair proves nothing.
+- **README samples**: paste the block into a file-based app verbatim, run it, and print the
+  values the comments claim.
