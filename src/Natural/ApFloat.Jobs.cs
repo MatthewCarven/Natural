@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using Natural.Jobs;
 
@@ -34,6 +35,40 @@ public readonly partial struct ApFloat
         return work is null
             ? Job.Start<ApFloat, DecimalCertificate>(context => Already(context, result))
             : Job.Start<ApFloat, DecimalCertificate>(context => ParseSteps(context, work, s));
+    }
+
+    /// <summary>
+    /// <see cref="ToString(string?, IFormatProvider?, RoundingMode)"/> as a job: the same text,
+    /// done a slice at a time. It's for long output, since printing costs the square of the
+    /// number of digits: F0 of 1e30000 takes a fifth of a second, of 1e100000 2.5 s, and of
+    /// 1e200000 10 s. E, G and R on a huge exponent take milliseconds, and so do short formats.
+    ///
+    /// The format is checked here, straight away, and so is the length: F (or a custom pattern)
+    /// on a value with more digits before the point than a string can hold throws at once. The
+    /// work is counted in limb steps, as in <see cref="StartParse"/>: double dabble counts them
+    /// as it goes (4,096 a step or a little more, ending on a bit), and a scaling's interval
+    /// round or exact route counts an estimate. The certificate says how the printed digits were
+    /// pinned (see <see cref="DecimalCertificate.Scale"/>); B, A and X print no decimal digits.
+    /// </summary>
+    /// <exception cref="FormatException">An unknown format or a malformed custom pattern.</exception>
+    /// <exception cref="OverflowException">More digits than a string can hold.</exception>
+    public Job<string, DecimalCertificate> StartFormat(string? format = null, IFormatProvider? provider = null,
+                                                       RoundingMode mode = RoundingMode.ToNearestEven)
+    {
+        var work = new DecimalFormat(this, format, NumberFormatInfo.GetInstance(provider), mode, ForcedRoute);
+        return Job.Start<string, DecimalCertificate>(context => FormatSteps(context, work));
+    }
+
+    private static IEnumerable<long> FormatSteps(JobContext<string, DecimalCertificate> context, DecimalFormat work)
+    {
+        context.ExpectedWork = work.ExpectedWork;
+        foreach (long units in work.Steps())
+        {
+            context.ExpectedWork = work.ExpectedWork;
+            yield return units;
+        }
+        context.Result = work.Text!;
+        context.Certificate = work.Certificate();
     }
 
     /// <summary>A job for text that needed no decimal arithmetic: NaN, infinity, hex, binary.</summary>
@@ -156,16 +191,19 @@ public readonly partial struct ApFloat
 }
 
 /// <summary>
-/// How decimal text was pinned to its binary value: by the certified interval engine, which
-/// brackets the exact value and accepts when both ends round the same way, or by the exact
-/// route, which builds the exact rational and rounds it once.
+/// How a decimal conversion was pinned: by the certified interval engine, which brackets the
+/// exact value and accepts when both ends round the same way, or by the exact route, which
+/// builds the exact rational and rounds it once. For a parse, the exact value is the text's;
+/// for a format, it's the value × 10^Scale, the integer whose digits were printed.
 /// </summary>
 /// <param name="Rounds">Interval rounds taken. 0 when the exact route ran from the start: always
-/// below 10^±4096, and for text that needed no decimal arithmetic (zero, NaN, infinity, hex, binary).</param>
+/// below 10^±4096, and when there was no decimal arithmetic (zero, NaN, infinity, hex, binary).</param>
 /// <param name="WorkingBits">The last round's working precision, W; 0 with no rounds.</param>
 /// <param name="Exact">True when the exact route decided the result. It does for a tie, and for an
 /// exact value in a directed mode, because the interval ends straddle the boundary they sit on.</param>
 /// <param name="Low">The last round's lower end: Low ≤ the exact value ≤ High. Null with no rounds.</param>
 /// <param name="High">The last round's upper end. When the rounds settled it, Low and High round to
 /// the same result, which is what certifies it.</param>
-public sealed record DecimalCertificate(int Rounds, long WorkingBits, bool Exact, ApFloat? Low, ApFloat? High);
+/// <param name="Scale">For a format, the power of ten the value was scaled by to make the printed
+/// digits: 4 for "F4" (so Low ≤ value × 10^4 ≤ High). 0 for a parse.</param>
+public sealed record DecimalCertificate(int Rounds, long WorkingBits, bool Exact, ApFloat? Low, ApFloat? High, long Scale = 0);

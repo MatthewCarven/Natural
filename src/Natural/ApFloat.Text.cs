@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace Natural;
@@ -47,28 +48,14 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     /// "#,##0.00", "'x = '0.###".</item>
     /// </list>
     /// Hex and binary always use "." for the point; the rest use the culture's separator and signs.
+    /// Long decimal output costs the square of its length (F0 of 1e100000 takes seconds);
+    /// <see cref="StartFormat"/> does the same work a slice at a time.
     /// </summary>
-    public string ToString(string? format, IFormatProvider? formatProvider, RoundingMode mode)
-    {
-        NumberFormatInfo nfi = NumberFormatInfo.GetInstance(formatProvider);
-        if (IsNaN) return nfi.NaNSymbol;
-        if (IsInfinity) return _negative ? nfi.NegativeInfinitySymbol : nfi.PositiveInfinitySymbol;
-        if (string.IsNullOrEmpty(format)) return Scientific(DecimalDigitsFor(Precision) - 1, 'E', nfi, mode);
-
-        if (!TryStandardFormat(format, out char letter, out int? n)) return Custom(format, nfi, mode);
-        return letter switch
-        {
-            'E' or 'e' => Scientific(n ?? 6, letter, nfi, mode),
-            'F' or 'f' => Fixed(n ?? nfi.NumberDecimalDigits, nfi, mode),
-            'G' or 'g' when n is null or 0 => Shortest(letter == 'g' ? 'e' : 'E', nfi),
-            'G' or 'g' => General(n!.Value, letter == 'g' ? 'e' : 'E', nfi, mode),
-            'R' or 'r' => Shortest('E', nfi),
-            'B' or 'b' => BinaryPoint(n, mode),
-            'A' or 'X' => Hex(n, upper: true, mode),
-            'a' or 'x' => Hex(n, upper: false, mode),
-            _ => throw new FormatException($"Unknown format \"{format}\". Use E, F, G, R, B, A or X, or a custom pattern."),
-        };
-    }
+    /// <exception cref="FormatException">An unknown format or a malformed custom pattern.</exception>
+    /// <exception cref="OverflowException">F or a custom pattern on a value with more digits
+    /// before the point than a string can hold.</exception>
+    public string ToString(string? format, IFormatProvider? formatProvider, RoundingMode mode) =>
+        new DecimalFormat(this, format, NumberFormatInfo.GetInstance(formatProvider), mode, ForcedRoute).RunToEnd();
 
     public bool TryFormat(Span<char> destination, out int charsWritten, ReadOnlySpan<char> format, IFormatProvider? provider)
     {
@@ -156,27 +143,19 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     }
 
     /// <summary>
-    /// |this| × 10^t, rounded to an integer in the given mode (the directed modes look at
-    /// this value's sign). Finite, non-zero values only. Past the cache of powers of five
-    /// this goes through the certified interval engine (ApFloat.Certified.cs), which falls
-    /// back to the exact route when it can't settle the rounding. That's E, G and R on a
-    /// value with a huge decimal exponent: t is about minus that exponent, and 1e100000 prints
-    /// in a millisecond or two. F and custom patterns scale by their few decimals, inside the
-    /// cache, so they take the exact route and pay for every digit (F0 of 1e100000: 2.5 s).
+    /// |v| × 10^t rounded to an integer, as engine steps: the first round has the result's bits
+    /// and the guard bits. Apart from DecimalFormat.Scaled, so the closures are only made when
+    /// the engine runs.
     /// </summary>
-    private uint[] ScaledToInteger(long t, RoundingMode mode)
-    {
-        ApFloat self = this;   // a lambda in a struct can't capture this
-        // The result has at most Top + 2 + t + floor(t · log2 5) bits: work with that many and a guard.
-        long resultBits = Math.Max(1, checked(Top + 2 + t + FloorLog2Of5Times(t)));
-        ApFloat r = TimesPowerOfTen(Mant, _exp, t, checked(resultBits + GuardBits),
-            (mag, exp) => RoundExact(self._negative, mag, exp, false, MaxPrecision, mode, minExp: 0),
-            () => self.ScaledToIntegerExact(t, mode));
-        return r.IsZero ? Magnitude.Empty : Magnitude.ShiftLeft(r.Mant, r._exp);
-    }
+    private static IEnumerable<long> ScaledToIntegerSteps(ApFloat v, long t, long startBits, RoundingMode mode,
+                                                          Route route, Pinning pinning) =>
+        TimesPowerOfTenSteps(v.Mant, v._exp, t, startBits,
+            (mag, exp) => RoundExact(v._negative, mag, exp, false, MaxPrecision, mode, minExp: 0),
+            () => v.ScaledToIntegerExact(t, mode), route, pinning);
 
     /// <summary>
-    /// ScaledToInteger the exact way. The value is m × 5^t × 2^(e + t): a product when
+    /// |this| × 10^t rounded to an integer, the exact way (DecimalFormat.Scaled takes the
+    /// interval engine first, past the cache). The value is m × 5^t × 2^(e + t): a product when
     /// t &gt;= 0, and a quotient by 5^-t otherwise, taken with bits to spare below the point
     /// and its remainder as the sticky bit. The result is an integer (exponent &gt;= 0), or zero.
     /// </summary>
@@ -193,122 +172,23 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
         return RoundExact(_negative, q, checked(e - shift), rem.Length != 0, MaxPrecision, mode, minExp: 0);
     }
 
-    /// <summary>floor(log10 |this|), exactly. Finite, non-zero values only.</summary>
-    private long DecimalExponent()
-    {
-        // 2^Top <= |v| < 2^(Top+1), so floor(Top · log10 2) is the answer or one short of it.
-        long x = FloorLog10Of2Times(Top);
-        while (true)
-        {
-            uint[] lead = ScaledToInteger(-x, RoundingMode.TowardZero);    // floor(|v| / 10^x)
-            if (lead.Length == 0) x--;
-            else if (Magnitude.Compare(lead, [10]) >= 0) x++;
-            else return x;
-        }
-    }
-
-    /// <summary>|this| rounded to k significant digits: exactly k digits, and the power of ten of the first.</summary>
-    private (string Digits, long Exponent) SignificantDigits(int k, RoundingMode mode)
-    {
-        long x = DecimalExponent();
-        string digits = Decimal(ScaledToInteger(checked(k - 1 - x), mode));
-        if (digits.Length > k)
-        {
-            // 9.99... rounded up to 10.0...: one power of ten more, and the extra digit is a 0.
-            digits = digits[..k];
-            x++;
-        }
-        return (digits, x);
-    }
-
-    private static string Decimal(uint[] mag) => ApInt.FromLimbs(mag, false).ToString();
-
     // ------------------------------------------------------------------
     // The formats
     // ------------------------------------------------------------------
-
-    private string Scientific(int decimals, char e, NumberFormatInfo nfi, RoundingMode mode)
-    {
-        var (digits, x) = IsZero ? (new string('0', decimals + 1), 0L) : SignificantDigits(checked(decimals + 1), mode);
-        var sb = new StringBuilder();
-        if (_negative) sb.Append(nfi.NegativeSign);
-        sb.Append(digits[0]);
-        if (decimals > 0) sb.Append(nfi.NumberDecimalSeparator).Append(digits, 1, decimals);
-        return AppendExponent(sb, e, x, nfi).ToString();
-    }
 
     /// <summary>E, a sign, and at least three digits: E+000, E-017, E+1234.</summary>
     private static StringBuilder AppendExponent(StringBuilder sb, char e, long x, NumberFormatInfo nfi) =>
         sb.Append(e).Append(x < 0 ? nfi.NegativeSign : nfi.PositiveSign)
           .Append(Math.Abs(x).ToString("000", CultureInfo.InvariantCulture));
 
-    private string Fixed(int decimals, NumberFormatInfo nfi, RoundingMode mode)
-    {
-        string digits = IsZero ? "0" : Decimal(ScaledToInteger(decimals, mode));
-        digits = digits.PadLeft(decimals + 1, '0');                  // at least one digit before the point
-        var sb = new StringBuilder();
-        if (_negative) sb.Append(nfi.NegativeSign);
-        sb.Append(digits, 0, digits.Length - decimals);
-        if (decimals > 0) sb.Append(nfi.NumberDecimalSeparator).Append(digits, digits.Length - decimals, decimals);
-        return sb.ToString();
-    }
-
-    private string General(int k, char e, NumberFormatInfo nfi, RoundingMode mode)
-    {
-        if (IsZero) return (_negative ? nfi.NegativeSign : "") + "0";
-        var (digits, x) = SignificantDigits(k, mode);
-        return Layout(digits.TrimEnd('0'), x, k, e, nfi);
-    }
-
-    /// <summary>
-    /// The fewest digits that read back as this value at its precision (rounding to
-    /// nearest). If k digits can, so can k + 1: a k-digit decimal is a (k+1)-digit one too,
-    /// and the (k+1)-digit neighbour of v on its side lies between it and v. So a binary
-    /// search over k finds the fewest; DecimalDigitsFor(Precision) digits always work.
-    /// </summary>
-    private string Shortest(char e, NumberFormatInfo nfi)
-    {
-        if (IsZero) return (_negative ? nfi.NegativeSign : "") + "0";
-        int most = DecimalDigitsFor(Precision);
-        long x = DecimalExponent();
-        (uint[] Q, long Scale) best = ReadsBackWith(most, x) ?? throw new InvalidOperationException("No round trip at full width.");
-        for (int lo = 1, hi = most; lo < hi;)
-        {
-            int mid = (lo + hi) >> 1;
-            var candidate = ReadsBackWith(mid, x);
-            if (candidate is { } c) { best = c; hi = mid; }
-            else lo = mid + 1;
-        }
-        string digits = Decimal(best.Q);
-        return Layout(digits.TrimEnd('0'), best.Scale + digits.Length - 1, most, e, nfi);
-    }
-
-    /// <summary>
-    /// A k-digit decimal q × 10^scale that reads back as this value, or null. The two
-    /// candidates are the k-digit neighbours either side of v; if both read back, the
-    /// nearer one (a tie going to the even digit).
-    /// </summary>
-    private (uint[] Q, long Scale)? ReadsBackWith(int k, long x)
-    {
-        long t = k - 1 - x;
-        uint[] below = ScaledToInteger(t, RoundingMode.TowardZero);
-        uint[] nearest = ScaledToInteger(t, RoundingMode.ToNearestEven);
-        uint[] above = Magnitude.Add(below, [1]);
-        uint[] other = Magnitude.Compare(nearest, below) == 0 ? above : below;
-        foreach (uint[] q in new[] { nearest, other })
-            if (CompareValues(FromDecimal(_negative, q, -t, Precision, RoundingMode.ToNearestEven), this) == 0)
-                return (q, -t);
-        return null;
-    }
-
     /// <summary>
     /// G layout for significant digits d (no trailing zeros) whose first digit is worth
     /// 10^x: plain from 1E-005 up to 10^widest, scientific outside that.
     /// </summary>
-    private string Layout(string d, long x, int widest, char e, NumberFormatInfo nfi)
+    private static string Layout(bool negative, string d, long x, int widest, char e, NumberFormatInfo nfi)
     {
         var sb = new StringBuilder();
-        if (_negative) sb.Append(nfi.NegativeSign);
+        if (negative) sb.Append(nfi.NegativeSign);
         if (x < -5 || x >= widest)
         {
             sb.Append(d[0]);
@@ -368,85 +248,64 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
     /// text (plain, quoted, or after a backslash) before or after the number. Sections (;),
     /// percent and exponents aren't supported and throw, rather than printing something wrong.
     /// </summary>
-    private string Custom(string format, NumberFormatInfo nfi, RoundingMode mode)
+    private sealed record CustomPattern(string Prefix, string Suffix, int WholePlaces, int FirstWholeZero,
+                                        int FractionPlaces, int LastFractionZero, bool Grouping, bool InNumber)
     {
-        var prefix = new StringBuilder();
-        var suffix = new StringBuilder();
-        int wholePlaces = 0, firstWholeZero = -1, fractionPlaces = 0, lastFractionZero = 0;
-        bool point = false, grouping = false, inNumber = false, afterNumber = false;
-
-        for (int i = 0; i < format.Length; i++)
+        public static CustomPattern Parse(string format)
         {
-            char c = format[i];
-            if (c is '0' or '#' or '.' or ',')
-            {
-                if (afterNumber) throw new FormatException($"\"{format}\": text between digit placeholders isn't supported.");
-                inNumber = true;
-                if (c == '.')
-                {
-                    if (point) throw new FormatException($"\"{format}\" has two decimal points.");
-                    point = true;
-                }
-                else if (c == ',') grouping |= !point;
-                else if (point)
-                {
-                    fractionPlaces++;
-                    if (c == '0') lastFractionZero = fractionPlaces;
-                }
-                else
-                {
-                    if (c == '0' && firstWholeZero < 0) firstWholeZero = wholePlaces;
-                    wholePlaces++;
-                }
-                continue;
-            }
+            var prefix = new StringBuilder();
+            var suffix = new StringBuilder();
+            int wholePlaces = 0, firstWholeZero = -1, fractionPlaces = 0, lastFractionZero = 0;
+            bool point = false, grouping = false, inNumber = false, afterNumber = false;
 
-            string literal;
-            if (c is '\'' or '"')
+            for (int i = 0; i < format.Length; i++)
             {
-                int end = format.IndexOf(c, i + 1);
-                if (end < 0) throw new FormatException($"\"{format}\" has an unclosed quote.");
-                literal = format[(i + 1)..end];
-                i = end;
-            }
-            else if (c == '\\')
-            {
-                if (++i == format.Length) throw new FormatException($"\"{format}\" ends with a backslash.");
-                literal = format[i].ToString();
-            }
-            else if (c is ';' or '%' or '‰' || (c is 'E' or 'e' && i + 1 < format.Length && format[i + 1] is '+' or '-' or '0'))
-                throw new FormatException($"\"{format}\": sections, percent and exponents aren't supported in custom patterns. Use E<n> for scientific.");
-            else literal = c.ToString();
+                char c = format[i];
+                if (c is '0' or '#' or '.' or ',')
+                {
+                    if (afterNumber) throw new FormatException($"\"{format}\": text between digit placeholders isn't supported.");
+                    inNumber = true;
+                    if (c == '.')
+                    {
+                        if (point) throw new FormatException($"\"{format}\" has two decimal points.");
+                        point = true;
+                    }
+                    else if (c == ',') grouping |= !point;
+                    else if (point)
+                    {
+                        fractionPlaces++;
+                        if (c == '0') lastFractionZero = fractionPlaces;
+                    }
+                    else
+                    {
+                        if (c == '0' && firstWholeZero < 0) firstWholeZero = wholePlaces;
+                        wholePlaces++;
+                    }
+                    continue;
+                }
 
-            if (inNumber) afterNumber = true;
-            (afterNumber ? suffix : prefix).Append(literal);
+                string literal;
+                if (c is '\'' or '"')
+                {
+                    int end = format.IndexOf(c, i + 1);
+                    if (end < 0) throw new FormatException($"\"{format}\" has an unclosed quote.");
+                    literal = format[(i + 1)..end];
+                    i = end;
+                }
+                else if (c == '\\')
+                {
+                    if (++i == format.Length) throw new FormatException($"\"{format}\" ends with a backslash.");
+                    literal = format[i].ToString();
+                }
+                else if (c is ';' or '%' or '‰' || (c is 'E' or 'e' && i + 1 < format.Length && format[i + 1] is '+' or '-' or '0'))
+                    throw new FormatException($"\"{format}\": sections, percent and exponents aren't supported in custom patterns. Use E<n> for scientific.");
+                else literal = c.ToString();
+
+                if (inNumber) afterNumber = true;
+                (afterNumber ? suffix : prefix).Append(literal);
+            }
+            return new(prefix.ToString(), suffix.ToString(), wholePlaces, firstWholeZero, fractionPlaces, lastFractionZero, grouping, inNumber);
         }
-
-        // Round to every fraction place, then drop trailing zeros back to the last 0 placeholder.
-        // A pattern with no placeholders ("'hello'") prints no digits, so don't make any: on a
-        // value with an enormous exponent, scaling to an integer overflows.
-        string digits = !inNumber || IsZero ? "0" : Decimal(ScaledToInteger(fractionPlaces, mode));
-        digits = digits.PadLeft(fractionPlaces + 1, '0');
-        string whole = digits[..^fractionPlaces].TrimStart('0');
-        string fraction = digits[^fractionPlaces..];
-        int keep = fraction.Length;
-        while (keep > lastFractionZero && fraction[keep - 1] == '0') keep--;
-        fraction = fraction[..keep];
-
-        int minWhole = firstWholeZero < 0 ? 0 : wholePlaces - firstWholeZero;
-        whole = whole.PadLeft(minWhole, '0');
-        if (whole.Length == 0 && fraction.Length == 0) whole = "0";
-        if (grouping) whole = Group(whole, nfi);
-
-        var sb = new StringBuilder();
-        if (_negative) sb.Append(nfi.NegativeSign);
-        sb.Append(prefix);
-        if (inNumber)
-        {
-            sb.Append(whole);
-            if (fraction.Length > 0) sb.Append(nfi.NumberDecimalSeparator).Append(fraction);
-        }
-        return sb.Append(suffix).ToString();
     }
 
     private static string Group(string whole, NumberFormatInfo nfi)
@@ -459,6 +318,411 @@ public readonly partial struct ApFloat : ISpanFormattable, IParsable<ApFloat>
             sb.Append(whole[i]);
         }
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// One format's work, as steps a job can pause between: decimal scalings (|x| × 10^t to an
+    /// integer, by the interval engine or the exact route), read-backs (for R), and digit
+    /// strings (double dabble). ToString runs it to the end and StartFormat a slice at a time,
+    /// so the two can't disagree. The format, and the output's length, are checked when it's made.
+    /// Each stage leaves its answer in a field for the stage that called it, rather than in a
+    /// box of its own: a short ToString would pay for every box.
+    /// </summary>
+    private sealed class DecimalFormat
+    {
+        private enum Kind { Text, Scientific, Fixed, General, Shortest, Binary, Hex, Custom }
+
+        /// <summary>A k-digit decimal q × 10^Scale that reads back, and the scaling that made it.</summary>
+        private sealed record Candidate(uint[] Q, long Scale, Pinning Pinning);
+
+        private readonly ApFloat _x;
+        private readonly NumberFormatInfo _nfi;
+        private readonly RoundingMode _mode;
+        private readonly Route _route;       // the test hook, read by the caller: steps may run on another thread
+        private readonly Kind _kind;
+        private readonly int _n;             // the number after the letter, defaults filled in
+        private readonly int? _bits;         // B's and A/X's number, which may be absent
+        private readonly char _e;            // 'E' or 'e' in the exponent; for hex, 'A'/'X' or 'a'/'x'
+        private readonly CustomPattern? _pattern;
+        private Pinning? _last;              // the last scaling or read-back: for the test hooks
+        private Pinning? _printed;           // the scaling that made the printed digits: for the certificate
+        private long _printedScale;
+        private long _later;                 // estimated units of the printed digits' double dabble, until it starts
+
+        // The stages' answers.
+        private uint[] _scaled = Magnitude.Empty;
+        private readonly StrongBox<string> _digits = new();
+        private long _exponent;
+        private (string Digits, long Exponent) _significant;
+        private Candidate? _candidate;
+
+        public DecimalFormat(ApFloat x, string? format, NumberFormatInfo nfi, RoundingMode mode, Route route)
+        {
+            (_x, _nfi, _mode, _route) = (x, nfi, mode, route);
+            if (x.IsNaN || x.IsInfinity)
+            {
+                _kind = Kind.Text;
+                Text = x.IsNaN ? nfi.NaNSymbol : x._negative ? nfi.NegativeInfinitySymbol : nfi.PositiveInfinitySymbol;
+                return;
+            }
+
+            if (string.IsNullOrEmpty(format)) (_kind, _n, _e) = (Kind.Scientific, DecimalDigitsFor(x.Precision) - 1, 'E');
+            else if (!TryStandardFormat(format, out char letter, out int? n)) (_kind, _pattern) = (Kind.Custom, CustomPattern.Parse(format));
+            else
+            {
+                (_kind, _n, _e) = letter switch
+                {
+                    'E' or 'e' => (Kind.Scientific, n ?? 6, letter),
+                    'F' or 'f' => (Kind.Fixed, n ?? nfi.NumberDecimalDigits, 'E'),
+                    'G' or 'g' when n is null or 0 => (Kind.Shortest, 0, letter == 'g' ? 'e' : 'E'),
+                    'G' or 'g' => (Kind.General, n!.Value, letter == 'g' ? 'e' : 'E'),
+                    'R' or 'r' => (Kind.Shortest, 0, 'E'),
+                    'B' or 'b' => (Kind.Binary, 0, 'E'),
+                    'A' or 'X' or 'a' or 'x' => (Kind.Hex, 0, letter),
+                    _ => throw new FormatException($"Unknown format \"{format}\". Use E, F, G, R, B, A or X, or a custom pattern."),
+                };
+                _bits = n;
+            }
+
+            // Plan the printed digits: they're the long part, and F's can't outgrow a string.
+            if (x.IsZero) return;
+            switch (_kind)
+            {
+                case Kind.Scientific: _later = ApInt.DecimalStringUnits(BitsForDigits(_n + 1L)); break;
+                case Kind.General: _later = ApInt.DecimalStringUnits(BitsForDigits(_n)); break;
+                case Kind.Shortest: _later = ApInt.DecimalStringUnits(x.Precision + 7); break;
+                case Kind.Fixed: PlanFixed(_n); break;
+                case Kind.Custom when _pattern!.InNumber: PlanFixed(_pattern.FractionPlaces); break;
+            }
+            ExpectedWork = _later;
+        }
+
+        private static long BitsForDigits(long digits) => digits * 3322 / 1000 + 1;   // log2(10) is 3.3219...
+
+        private void PlanFixed(int places)
+        {
+            long top = _x.Top;
+            long whole = top < 0 ? 1 : (long)((Int128)top * 1233 / 4096) + 1;   // the digits before the point, or one fewer
+            if (whole > Array.MaxLength - places - 2L)
+                throw new OverflowException($"This value has about {whole:N0} digits before the point: more than a string can hold.");
+            _later = ApInt.DecimalStringUnits(Math.Max(top + 1, 0) + BitsForDigits(places));
+        }
+
+        public string? Text { get; private set; }
+
+        public long WorkDone { get; private set; }
+
+        /// <summary>An estimate of the whole: what's done, what the current stage still needs, and the printed digits.</summary>
+        public long ExpectedWork { get; private set; }
+
+        /// <summary>The steps. B, A and X are linear, so they're done here, with no steps.</summary>
+        public IEnumerable<long> Steps()
+        {
+            switch (_kind)
+            {
+                case Kind.Binary:
+                    Text = _x.BinaryPoint(_bits, _mode);
+                    return [];
+                case Kind.Hex:
+                    Text = _x.Hex(_bits, _e is 'A' or 'X', _mode);
+                    return [];
+                case Kind.Scientific: return Scientific(_n);
+                case Kind.Fixed: return Fixed(_n);
+                case Kind.General: return General(_n);
+                case Kind.Shortest: return Shortest();
+                case Kind.Custom: return Custom(_pattern!);
+                default: return [];
+            }
+        }
+
+        /// <summary>All the steps, on this thread, leaving the last scaling's rounds and route in the test hooks.</summary>
+        public string RunToEnd()
+        {
+            try
+            {
+                foreach (long _ in Steps()) { }
+            }
+            finally
+            {
+                if (_last is not null)
+                {
+                    LastRounds = _last.Rounds;
+                    LastExact = _last.Exact;
+                }
+            }
+            return Text!;
+        }
+
+        /// <summary>How the printed digits were pinned: Low ≤ x × 10^Scale ≤ High, signed.</summary>
+        public DecimalCertificate Certificate()
+        {
+            if (_printed is null) return new DecimalCertificate(0, 0, true, null, null);
+            ApFloat? low = _printed.Low, high = _printed.High;
+            if (_x._negative && low is { } l && high is { } h) (low, high) = (-h, -l);
+            return new DecimalCertificate(_printed.Rounds, _printed.WorkingBits, _printed.Exact, low, high, _printedScale);
+        }
+
+        // --- the stages: each yields from the ones below it ---
+
+        /// <summary>|x| × 10^t rounded to an integer in the mode (which looks at x's sign), into _scaled.</summary>
+        private IEnumerable<long> Scaled(long t, RoundingMode mode, Pinning pinning)
+        {
+            ApFloat v = _x;
+            // The result has at most Top + 2 + t + floor(t · log2 5) bits: work with that many and a guard.
+            long resultBits = Math.Max(1, checked(v.Top + 2 + t + FloorLog2Of5Times(t)));
+            long startBits = checked(resultBits + GuardBits);
+            _last = pinning;
+            long first = FirstStepUnits(Magnitude.BitLength(v.Mant), t, startBits, _route);
+            ExpectedWork = WorkDone + first + _later;
+            if (ExactFromTheStart(t, _route))
+            {
+                // The engine's one step, taken here: a short ToString would pay for its iterator and closures.
+                pinning.Exact = true;
+                pinning.Result = v.ScaledToIntegerExact(t, mode);
+                WorkDone += first;
+                ExpectedWork = WorkDone + _later;
+                yield return first;
+            }
+            else
+            {
+                foreach (long units in ScaledToIntegerSteps(v, t, startBits, mode, _route, pinning))
+                {
+                    WorkDone += units;
+                    ExpectedWork = WorkDone + pinning.NextUnits + _later;
+                    yield return units;
+                }
+            }
+            ApFloat r = pinning.Result;
+            _scaled = r.IsZero ? Magnitude.Empty : Magnitude.ShiftLeft(r.Mant, r._exp);
+        }
+
+        /// <summary>q × 10^s read back at x's precision, rounding to nearest, into pinning.Result.</summary>
+        private IEnumerable<long> ReadBack(uint[] q, long s, Pinning pinning)
+        {
+            _last = pinning;
+            long startBits = (long)_x.Precision + GuardBits;
+            long first = FirstStepUnits(Magnitude.BitLength(q), s, startBits, _route);
+            ExpectedWork = WorkDone + first + _later;
+            if (ExactFromTheStart(s, _route))
+            {
+                // As in Scaled: the one step, without the iterator.
+                pinning.Exact = true;
+                pinning.Result = FromDecimalExact(_x._negative, q, s, _x.Precision, RoundingMode.ToNearestEven);
+                WorkDone += first;
+                ExpectedWork = WorkDone + _later;
+                yield return first;
+                yield break;
+            }
+            foreach (long units in FromDecimalSteps(_x._negative, q, s, _x.Precision, RoundingMode.ToNearestEven, _route, pinning))
+            {
+                WorkDone += units;
+                ExpectedWork = WorkDone + pinning.NextUnits + _later;
+                yield return units;
+            }
+        }
+
+        /// <summary>The digits of a magnitude, by double dabble, into _digits.</summary>
+        private IEnumerable<long> Digits(uint[] mag)
+        {
+            long total = ApInt.DecimalStringUnits(Magnitude.BitLength(mag)), done = 0;
+            _later = 0;
+            ExpectedWork = WorkDone + total;
+            foreach (long units in ApInt.DecimalStringSteps(mag, _digits))
+            {
+                WorkDone += units;
+                done += units;
+                ExpectedWork = WorkDone + Math.Max(0, total - done);
+                yield return units;
+            }
+        }
+
+        /// <summary>floor(log10 |x|), exactly, into _exponent. Finite, non-zero values only.</summary>
+        private IEnumerable<long> DecimalExponent()
+        {
+            // 2^Top <= |x| < 2^(Top+1), so floor(Top · log10 2) is the answer or one short of it.
+            long x = FloorLog10Of2Times(_x.Top);
+            while (true)
+            {
+                foreach (long units in Scaled(-x, RoundingMode.TowardZero, new Pinning())) yield return units;   // floor(|x| / 10^x)
+                if (_scaled.Length == 0) x--;
+                else if (Magnitude.Compare(_scaled, [10]) >= 0) x++;
+                else break;
+            }
+            _exponent = x;
+        }
+
+        /// <summary>
+        /// |x| rounded to k significant digits, into _significant: exactly k digits, and the
+        /// power of ten of the first.
+        /// </summary>
+        private IEnumerable<long> SignificantDigits(int k)
+        {
+            foreach (long units in DecimalExponent()) yield return units;
+            long x = _exponent;
+            long t = checked(k - 1 - x);
+            var pinning = new Pinning();
+            foreach (long units in Scaled(t, _mode, pinning)) yield return units;
+            (_printed, _printedScale) = (pinning, t);
+            foreach (long units in Digits(_scaled)) yield return units;
+            string digits = _digits.Value!;
+            if (digits.Length > k)
+            {
+                // 9.99... rounded up to 10.0...: one power of ten more, and the extra digit is a 0.
+                digits = digits[..k];
+                x++;
+            }
+            _significant = (digits, x);
+        }
+
+        private IEnumerable<long> Scientific(int decimals)
+        {
+            string digits;
+            long x = 0;
+            if (_x.IsZero) digits = new string('0', decimals + 1);
+            else
+            {
+                foreach (long units in SignificantDigits(checked(decimals + 1))) yield return units;
+                (digits, x) = _significant;
+            }
+            var sb = new StringBuilder();
+            if (_x._negative) sb.Append(_nfi.NegativeSign);
+            sb.Append(digits[0]);
+            if (decimals > 0) sb.Append(_nfi.NumberDecimalSeparator).Append(digits, 1, decimals);
+            Text = AppendExponent(sb, _e, x, _nfi).ToString();
+        }
+
+        private IEnumerable<long> Fixed(int decimals)
+        {
+            string digits = "0";
+            if (!_x.IsZero)
+            {
+                var pinning = new Pinning();
+                foreach (long units in Scaled(decimals, _mode, pinning)) yield return units;
+                (_printed, _printedScale) = (pinning, decimals);
+                foreach (long units in Digits(_scaled)) yield return units;
+                digits = _digits.Value!;
+            }
+            digits = digits.PadLeft(decimals + 1, '0');                  // at least one digit before the point
+            var sb = new StringBuilder();
+            if (_x._negative) sb.Append(_nfi.NegativeSign);
+            sb.Append(digits, 0, digits.Length - decimals);
+            if (decimals > 0) sb.Append(_nfi.NumberDecimalSeparator).Append(digits, digits.Length - decimals, decimals);
+            Text = sb.ToString();
+        }
+
+        private IEnumerable<long> General(int k)
+        {
+            if (_x.IsZero)
+            {
+                Text = (_x._negative ? _nfi.NegativeSign : "") + "0";
+                yield break;
+            }
+            foreach (long units in SignificantDigits(k)) yield return units;
+            var (digits, x) = _significant;
+            Text = Layout(_x._negative, digits.TrimEnd('0'), x, k, _e, _nfi);
+        }
+
+        /// <summary>
+        /// The fewest digits that read back as x at its precision (rounding to nearest). If k
+        /// digits can, so can k + 1: a k-digit decimal is a (k+1)-digit one too, and the
+        /// (k+1)-digit neighbour of x on its side lies between it and x. So a binary search over
+        /// k finds the fewest; DecimalDigitsFor(Precision) digits always work.
+        /// </summary>
+        private IEnumerable<long> Shortest()
+        {
+            if (_x.IsZero)
+            {
+                Text = (_x._negative ? _nfi.NegativeSign : "") + "0";
+                yield break;
+            }
+            int most = DecimalDigitsFor(_x.Precision);
+            foreach (long units in DecimalExponent()) yield return units;
+            long x = _exponent;
+
+            foreach (long units in ReadsBackWith(most, x)) yield return units;
+            Candidate best = _candidate ?? throw new InvalidOperationException("No round trip at full width.");
+            for (int lo = 1, hi = most; lo < hi;)
+            {
+                int mid = (lo + hi) >> 1;
+                foreach (long units in ReadsBackWith(mid, x)) yield return units;
+                if (_candidate is { } c)
+                {
+                    best = c;
+                    hi = mid;
+                }
+                else lo = mid + 1;
+            }
+
+            (_printed, _printedScale) = (best.Pinning, -best.Scale);
+            foreach (long units in Digits(best.Q)) yield return units;
+            string digits = _digits.Value!;
+            Text = Layout(_x._negative, digits.TrimEnd('0'), best.Scale + digits.Length - 1, most, _e, _nfi);
+        }
+
+        /// <summary>
+        /// A k-digit decimal q × 10^scale that reads back as x, or null, into _candidate. The two
+        /// candidates are the k-digit neighbours either side of x; if both read back, the nearer
+        /// one (a tie going to the even digit).
+        /// </summary>
+        private IEnumerable<long> ReadsBackWith(int k, long x)
+        {
+            long t = k - 1 - x;
+            Pinning chopped = new(), rounded = new();
+            foreach (long units in Scaled(t, RoundingMode.TowardZero, chopped)) yield return units;
+            uint[] below = _scaled;
+            foreach (long units in Scaled(t, RoundingMode.ToNearestEven, rounded)) yield return units;
+            uint[] nearest = _scaled;
+            uint[] other = Magnitude.Compare(nearest, below) == 0 ? Magnitude.Add(below, [1]) : below;
+            foreach (var (q, madeBy) in new[] { (nearest, rounded), (other, chopped) })
+            {
+                var readBack = new Pinning();
+                foreach (long units in ReadBack(q, -t, readBack)) yield return units;
+                if (CompareValues(readBack.Result, _x) == 0)
+                {
+                    _candidate = new Candidate(q, -t, madeBy);
+                    yield break;
+                }
+            }
+            _candidate = null;
+        }
+
+        private IEnumerable<long> Custom(CustomPattern pattern)
+        {
+            // Round to every fraction place, then drop trailing zeros back to the last 0 placeholder.
+            // A pattern with no placeholders ("'hello'") prints no digits, so don't make any: on a
+            // value with an enormous exponent, scaling to an integer overflows.
+            int places = pattern.FractionPlaces;
+            string digits = "0";
+            if (pattern.InNumber && !_x.IsZero)
+            {
+                var pinning = new Pinning();
+                foreach (long units in Scaled(places, _mode, pinning)) yield return units;
+                (_printed, _printedScale) = (pinning, places);
+                foreach (long units in Digits(_scaled)) yield return units;
+                digits = _digits.Value!;
+            }
+            digits = digits.PadLeft(places + 1, '0');
+            string whole = digits[..^places].TrimStart('0');
+            string fraction = digits[^places..];
+            int keep = fraction.Length;
+            while (keep > pattern.LastFractionZero && fraction[keep - 1] == '0') keep--;
+            fraction = fraction[..keep];
+
+            int minWhole = pattern.FirstWholeZero < 0 ? 0 : pattern.WholePlaces - pattern.FirstWholeZero;
+            whole = whole.PadLeft(minWhole, '0');
+            if (whole.Length == 0 && fraction.Length == 0) whole = "0";
+            if (pattern.Grouping) whole = Group(whole, _nfi);
+
+            var sb = new StringBuilder();
+            if (_x._negative) sb.Append(_nfi.NegativeSign);
+            sb.Append(pattern.Prefix);
+            if (pattern.InNumber)
+            {
+                sb.Append(whole);
+                if (fraction.Length > 0) sb.Append(_nfi.NumberDecimalSeparator).Append(fraction);
+            }
+            Text = sb.Append(pattern.Suffix).ToString();
+        }
     }
 
     // ------------------------------------------------------------------

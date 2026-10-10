@@ -57,6 +57,14 @@ public readonly partial struct ApInt
     /// </summary>
     internal static long DecimalDigitsForBits(long bits) => ((bits * 1234) >> 12) + 2;
 
+    /// <summary>Decimal digits: double dabble, below, run to the end.</summary>
+    private static string ToDecimalDigits(uint[] mag)
+    {
+        var result = new StrongBox<string>();
+        foreach (long _ in DecimalStringSteps(mag, result)) { }
+        return result.Value!;
+    }
+
     /// <summary>
     /// Binary to decimal by "double dabble" (shift-and-add-3), the way hardware
     /// does it with no divider: shift the number's bits, top first, into a BCD
@@ -66,17 +74,64 @@ public readonly partial struct ApInt
     /// The BCD register is packed eight digits to a uint, and the add-3 step does
     /// all eight nibbles at once with a mask: a digit d is 5 or more exactly when
     /// d + 3 sets its nibble's top bit.
+    ///
+    /// As steps a job can pause between: a bit costs a limb step per BCD word in use for
+    /// each of the two passes, plus one, and the steps yield those counts after every
+    /// <see cref="DigitStepUnits"/> or so (a step ends on a bit). Reading the digits out at
+    /// the end costs one more per word. The string is in <paramref name="result"/> when the
+    /// steps end.
     /// </summary>
-    private static string ToDecimalDigits(uint[] mag)
+    internal static IEnumerable<long> DecimalStringSteps(uint[] mag, StrongBox<string> result)
     {
         long bits = Magnitude.BitLength(mag);
-        if (bits == 0) return "0";
+        if (bits == 0)
+        {
+            result.Value = "0";
+            yield break;
+        }
 
         var bcd = new uint[(DecimalDigitsForBits(bits) + 7) / 8 + 1];
         int used = 1;   // BCD words that can be non-zero so far
-
-        for (long i = bits - 1; i >= 0; i--)
+        long next = bits - 1, pending = 0;
+        while (next >= 0)
         {
+            used = Dabble(mag, bcd, used, ref next, ref pending);
+            if (pending >= DigitStepUnits)
+            {
+                yield return pending;
+                pending = 0;
+            }
+        }
+
+        var sb = new StringBuilder((int)Math.Min(DecimalDigitsForBits(bits), int.MaxValue));
+        bool leading = true;
+        for (int w = used - 1; w >= 0; w--)
+        {
+            for (int nibble = 7; nibble >= 0; nibble--)
+            {
+                uint digit = (bcd[w] >> (nibble << 2)) & 0xF;
+                if (leading && digit == 0) continue;
+                leading = false;
+                sb.Append((char)('0' | digit));   // '0' is 0x30, so OR-ing in 0..9 gives the digit
+            }
+        }
+        result.Value = sb.ToString();
+        yield return pending + used;
+    }
+
+    /// <summary>
+    /// Double dabble's work: shifts bits next, next - 1, ... into the register until a step's
+    /// worth of limb steps is pending or the bits run out, and returns the words now in use.
+    /// Out of the iterator, so its loops run on locals: in the iterator they'd be fields, and
+    /// F0 of 1e30000 took half as long again (300 ms, not 200).
+    /// </summary>
+    private static int Dabble(uint[] mag, uint[] bcd, int used, ref long next, ref long pending)
+    {
+        long i = next, units = pending;
+        for (; i >= 0 && units < DigitStepUnits; i--)
+        {
+            units += 2L * used + 1;
+
             // Add 3 to every nibble >= 5. Nibbles are <= 9 here, so +3 never carries
             // between nibbles and the plain adds below can't spill.
             for (int w = 0; w < used; w++)
@@ -96,21 +151,16 @@ public readonly partial struct ApInt
             }
             if (carry != 0) bcd[used++] = carry;
         }
-
-        var sb = new StringBuilder((int)Math.Min(DecimalDigitsForBits(bits), int.MaxValue));
-        bool leading = true;
-        for (int w = used - 1; w >= 0; w--)
-        {
-            for (int nibble = 7; nibble >= 0; nibble--)
-            {
-                uint digit = (bcd[w] >> (nibble << 2)) & 0xF;
-                if (leading && digit == 0) continue;
-                leading = false;
-                sb.Append((char)('0' | digit));   // '0' is 0x30, so OR-ing in 0..9 gives the digit
-            }
-        }
-        return sb.ToString();
+        (next, pending) = (i, units);
+        return used;
     }
+
+    /// <summary>
+    /// What <see cref="DecimalStringSteps"/> will count for n bits, near enough: the words in
+    /// use grow by log10(2)/8 a bit, so the sum is about n²·log10(2)/8 + 3n.
+    /// </summary>
+    internal static long DecimalStringUnits(long n) =>
+        (long)Int128.Min((Int128)n * n * 3763 / 100_000 + 3 * (Int128)n, long.MaxValue / 4);
 
     // ------------------------------------------------------------------
     // Parsing
@@ -182,9 +232,10 @@ public readonly partial struct ApInt
     private static readonly SearchValues<char> DecimalDigitsAndUnderscore = SearchValues.Create("0123456789_");
 
     /// <summary>
-    /// The decimal digit loop, after at least this many limb steps of which it yields (a step
-    /// ends on a digit). About 0.06 ms of work here: fine-grained enough for a time budget,
-    /// and coarse enough that the yields cost nothing measurable.
+    /// The decimal loops both ways (digits in, double dabble out) yield after at least this
+    /// many limb steps (a step ends on a digit or a bit). About 0.065 ms of work here:
+    /// fine-grained enough for a time budget, and coarse enough that the yields cost nothing
+    /// measurable.
     /// </summary>
     internal const int DigitStepUnits = 4096;
 

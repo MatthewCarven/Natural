@@ -38,7 +38,8 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   carries (`DecimalDigitsFor(p)`, 17 for 53 bits), so a column lines up (Matthew's choice).
   Output starts from the exact value (m × 5^k / 10^k) and rounds once through `RoundExact`,
   ties to even (not .NET's away-from-zero). Parse builds digits × 10^exp exactly and rounds
-  once. Powers of five are cached below 5^4096.
+  once. Powers of five are cached below 5^4096. Formatting is `DecimalFormat`: each format is
+  an iterator over stages (`Scaled`, `ReadBack`, `Digits`), and `ToString` runs it to the end.
 - `src/Natural/ApFloat.Certified.cs` — the certified interval engine (Ziv's strategy), for
   X × 10^n past the cache: bounds on 5^n by square-and-multiply with directed rounding, both
   ends rounded to the target, accepted when they agree; otherwise double the working bits,
@@ -51,19 +52,24 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   caller steps by units or time (`Continue`), with `Progress`, `Result` and an optional
   certificate. The work is an iterator that yield-returns the units it just did. Matthew wants
   this reusable in other projects, so keep numbers out of it.
-- `src/Natural/ApFloat.Jobs.cs` — `StartParse`, a parse as a job, and `DecimalCertificate`.
-  `Parse` runs the same steps (`DecimalParse`: `ApInt.DecimalDigitSteps`, then the engine's),
-  so the two can't disagree. Units are limb steps: counted in the digit loop, estimated from
-  sizes for a round or the exact route. Estimates must stay cheap: a short parse pays for them.
+- `src/Natural/ApFloat.Jobs.cs` — `StartParse` and `StartFormat`, a parse or a format as a
+  job, and `DecimalCertificate` (with `Scale` for a format). `Parse` and `ToString` run the same
+  steps (`DecimalParse`, `DecimalFormat`), so a job and the one-shot call can't disagree. Units
+  are limb steps: counted in the digit loop and in double dabble (`ApInt.DecimalStringSteps`),
+  estimated from sizes for a round or the exact route. Two rules from measuring, A against B:
+  estimates must stay cheap (a short parse pays for them), and **hot loops stay out of
+  iterators** (an iterator's locals are fields: double dabble ran 50% slower inside one), so
+  an iterator calls a plain method for each step's work (`Dabble`, `TimesTenPlus`).
 - `tests/Natural.Tests` — xUnit. `Oracle.cs` converts to/from `BigInteger` through
   raw magnitude bytes, so arithmetic tests don't depend on the text code.
   `FloatOracle.cs` is ApFloat's reference: exact rationals rounded by long division
   (no code shared with `RoundExact`), an IEEE encoder, and biased random bit patterns.
   The hardware (`double`, `float`, `Half`) is the second oracle. `CertifiedTests.cs` pins
   values for exponents like 10^7 that were computed offline with exact Python integers.
-  `JobTests.cs` checks `Natural.Jobs` on counting jobs; `ParseJobTests.cs` checks that a job
-  gives what `Parse` gives however it's stepped. Cap every `while (!job.Continue(...))` loop in
-  a test, or a resume that restarts hangs the suite instead of failing it.
+  `JobTests.cs` checks `Natural.Jobs` on counting jobs; `ParseJobTests.cs` and
+  `FormatJobTests.cs` check that a job gives what `Parse`/`ToString` gives however it's stepped,
+  and that progress tracks the work. Cap every `while (!job.Continue(...))` loop in a test, or a
+  resume that restarts hangs the suite instead of failing it.
 - `Natural_Playground/` — a WinForms calculator over ApFloat that takes the result apart
   (significand, exponent, ulp, every format, and a check against `double`). It's in the
   solution, so the solution builds on Windows only. `FloatReport` makes the text with no UI:

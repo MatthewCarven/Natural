@@ -108,7 +108,7 @@ public readonly partial struct ApFloat
                                                           Route route, Pinning pinning)
     {
         long power = Math.Abs(n), xBits = Magnitude.BitLength(mag);
-        if (route == Route.Exact || (route == Route.Auto && power < CachedFives))
+        if (ExactFromTheStart(n, route))
         {
             pinning.Exact = true;
             pinning.Result = exact();
@@ -176,10 +176,18 @@ public readonly partial struct ApFloat
     private static long NBits(long power) => 64 - System.Numerics.BitOperations.LeadingZeroCount((ulong)power);
 
     /// <summary>The estimate of <see cref="TimesPowerOfTenSteps"/>'s first step, before it runs.</summary>
+    /// <summary>
+    /// Whether × 10^n goes straight to the exact route: below the cache (it's cheap there), or
+    /// forced. Then <see cref="TimesPowerOfTenSteps"/> is one step, exact() and its
+    /// <see cref="ExactUnits"/>, which a caller may take itself and skip the iterator.
+    /// </summary>
+    private static bool ExactFromTheStart(long n, Route route) =>
+        route == Route.Exact || (route == Route.Auto && Math.Abs(n) < CachedFives);
+
     private static long FirstStepUnits(long xBits, long n, long startBits, Route route)
     {
         long power = Math.Abs(n);
-        if (route == Route.Exact || (route == Route.Auto && power < CachedFives)) return ExactUnits(xBits, n, startBits);
+        if (ExactFromTheStart(n, route)) return ExactUnits(xBits, n, startBits);
         // Past the cache the steps compute 5^n's bit length anyway, and the parse costs far more.
         long w = startBits + NBits(power);
         return ExactFinishes(w, FloorLog2Of5Times(power) + 1, route) ? ExactUnits(xBits, n, startBits) : RoundUnits(xBits, w, NBits(power));

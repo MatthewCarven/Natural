@@ -3,11 +3,13 @@
 ## Order of work (agreed with Matthew 2026-09-30)
 1. ~~**Session 4**: the certified interval engine.~~ Done 2026-09-30.
 2. **Session 5**: resumable jobs, built on 4. ~~5a (`Natural.Jobs`, `StartParse`)~~ done
-   2026-10-09. **Next: 5b** (`StartFormat`, resumable double dabble); brief below. Then 5c
-   (the exact route, resumable), which is small and rarely needed.
+   2026-10-09; ~~5b (`StartFormat`, double dabble as steps)~~ done 2026-10-10. 5c (the exact
+   route as steps) is left, and measured cheap: **recommend parking it** and going on to 3.
+   Ask Matthew at the start of the next session which he wants.
 3. **The IEEE operations ApFloat still lacks**: FMA, Floor/Ceiling/Truncate/Round, IEEE
    remainder, and `ApInt` integer square root, then `ApFloat.Sqrt`. The **IEEE status
    flags** go in first, in the same session, so each new operation reports them from day one.
+   **Next** (unless Matthew picks 5c): the session 6 brief is below, after session 5.
 4. **Parse into an `IeeeFormat`**: small, and for very wide formats it uses 4's engine.
 5. **`ApInt` bitwise operators** (`&`, `|`, `^`, `~`), then `Pow`, `ModPow`, `Gcd`.
 6. **Generic math**: `INumber<ApInt>` / `IBinaryInteger<ApInt>` (needs 5), `INumber<ApFloat>`
@@ -163,8 +165,8 @@ Order: session 4 (engine), then 5 (jobs). Session 6's extras were split up on
       ±2.7 × 10^18). What's left that's slow is long input, and that's session 5's.
 - [ ] Long digit strings both ways are quadratic in their length: ApInt's decimal digit loop
       when parsing (30,000 digits: 0.75 s), and double dabble when printing (`F0` of 1e30000:
-      0.22 s). Session 5's jobs make them resumable (parsing: `StartParse`, done 2026-10-09;
-      printing: 5b); order item 7 (speed) would make them faster.
+      0.22 s). Session 5's jobs make them resumable (parsing: `StartParse`, 2026-10-09;
+      printing: `StartFormat`, 2026-10-10); order item 7 (speed) would make them faster.
 
 ### Session 5 — resumable jobs
 Goal: an opt-in reference mode whose work the caller holds, steps, pauses and resumes.
@@ -195,43 +197,19 @@ machinery is a general piece, not tied to parsing (Matthew's reuse aim below).
 - [x] 506 → 555 tests; 23 mutations, all red (two only after the tests were tightened).
       Short parses pay about 0.18 µs for the steps. Details in WORKLOG.
 
-#### 5b — brief for a fresh chat: `StartFormat`, and double dabble as steps
-Goal: `x.StartFormat(format, provider, mode)`, a job giving exactly `x.ToString(format,
-provider, mode)`. Same shape as `StartParse` (Matthew's answers above cover it: a job you step,
-in `Natural.Jobs`), so no new question unless the certificate's meaning needs one (below).
-
-Where formatting's time goes (Release, 2026-10-09): `F0`/`F4` of 1e30000 takes 0.23 s, of
-1e100000 2.5 s, of 1e200000 10 s. Nearly all of it is **double dabble** (`ApInt.ToDecimalDigits`,
-two passes over the BCD words per bit, so quadratic). `ScaledToInteger` for F is linear: it
-scales by a few decimals, inside the cache. E/G/R on a huge exponent go through the engine and
-take milliseconds; E with very many digits (E100000) pays double dabble again.
-
-Plan, by analogy with 5a's code:
-- `ApInt.DecimalStringSteps(mag, StrongBox<string>)`: double dabble as an iterator, counting
-  `2·used + 1` limb steps a bit, yielding every `DigitStepUnits` or so (a step ends on a bit).
-  `ToDecimalDigits` drains it. Measure short `ToString` (ApInt and ApFloat) against a copy of
-  the old build, alternating A B A B: in 5a, estimates that called the bitwise
-  `FloorLog2Of5Times` doubled a short parse's cost until replaced by |n|·2.321929.
-- `ScaledToIntegerSteps`, as `FromDecimalSteps` is to `FromDecimal`, through
-  `TimesPowerOfTenSteps` (one step per round; the exact route stays one whole step until 5c).
-- The formats call `ScaledToInteger` more than once (`DecimalExponent` loops, `SignificantDigits`,
-  `Shortest`'s binary search with a `FromDecimal` per candidate). Write the step versions of the
-  ones that print many digits (F, E, G, custom); `Shortest`, B, A and X can be one whole step
-  (Shortest prints at most `DecimalDigitsFor(p)` digits; B, A and X are linear).
-- `ToString` should drain the same steps, as `Parse` does, so the two can't disagree.
-- Output that can't exist (F0 of 1e(10^18): more digits than a string holds) should throw at
-  `StartFormat`, from an estimate of the length, rather than after a long time.
-- The certificate: the pinning of the digits printed (the last `ScaledToInteger`), as a
-  `DecimalCertificate` on |x| × 10^t. Decide whether that's clear enough or needs its own type;
-  ask Matthew only if it changes what he sees.
-
-Tests: as 5a's (`ParseJobTests` is the model): a job = `ToString` for random values in every
-format, mode and precision; stepped one unit at a time; budgets to the exact step end; progress
-monotone and ≥ 0.9 at the end; `F0` of 1e30000 in slices against `BigInteger`; double dabble's
-own count checked independently. Cap every `while (!Continue(...))` loop in tests, or a
-resume that restarts hangs the suite instead of failing it. Mutations: double dabble restarting
-from the top bit on resume; a BCD word lost across a yield (`used` not kept); a step boundary
-off by one; StartFormat and ToString disagreeing for one format; progress from the wrong total.
+#### 5b — done 2026-10-10
+- [x] `x.StartFormat(format, provider, mode)` → `Job<string, DecimalCertificate>`, giving exactly
+      `x.ToString(format, provider, mode)`. `ToString` drains the same steps (`DecimalFormat` in
+      `ApFloat.Text.cs`). The format and the output's length are checked at once: F or a custom
+      pattern with more digits before the point than a string holds throws `OverflowException`
+      at the start (`ToString` too, with a clearer message than before).
+- [x] Double dabble as steps (`ApInt.DecimalStringSteps`, `2·used + 1` limb steps a bit, 4,096 a
+      step). Its loops live in a plain method (`Dabble`): inside the iterator they ran on fields,
+      and F0 of 1e30000 took 300 ms instead of 200. Now the same as before.
+- [x] `DecimalCertificate` gained `Scale`: for a format, the power of ten the digits came from
+      (Low ≤ x × 10^Scale ≤ High); 0 for a parse.
+- [x] 555 → 581 tests; 17 mutations, 16 red, 1 explained (which scaling sets the test hooks
+      after R). Short formats cost the same or up to 0.15 µs more. Details in WORKLOG.
 
 #### 5c — the exact route as steps (small; rarely needed)
 `Magnitude.Multiply`, `DivRem` and `PowerOfFive` past the cache as iterators, yielding between
@@ -261,7 +239,57 @@ them in a controlled and safe way". So the budget, the work-unit count,
 `Continue`/`Complete`/`Progress` and the certificate belong in a general piece that a parse or
 a format plugs into.
 
-### The rest (was session 6; see "Order of work" for where each now goes)
+### Session 6 — IEEE status flags, then the missing operations (brief for a fresh chat)
+Order of work item 3. Big, so proposed as **6a** (flags), **6b** (FMA, round to integral,
+remainder) and **6c** (integer square root, then `ApFloat.Sqrt`). The flags go first so every new
+operation reports them from day one (Matthew's order, 2026-09-30).
+
+**Ask Matthew first** (one question, previews, recommendation first): how flags reach the
+caller. The options:
+- **An `out IeeeFlags` on the format overloads** (recommended): `ApFloat.Divide(a, b,
+  IeeeFormat.Binary64, mode, out IeeeFlags flags)`. Pure, no hidden state, safe with jobs on
+  other threads, easy to test against the oracle. `[Flags] enum IeeeFlags { None, Inexact,
+  Underflow, Overflow, DivideByZero, Invalid }`.
+- A context object that accumulates them (`var ctx = new IeeeContext(); Add(a, b, fmt, mode,
+  ctx); ctx.Flags`), like Python's `decimal`: convenient for long calculations, but a second
+  way to call everything.
+- Thread-static sticky flags, as C's `fenv.h`: no new parameters, but state that leaks
+  between callers and breaks under async. Not recommended.
+
+Where they come from (IEEE 754-2019 §7):
+- **Inexact**: `RoundExact`/`RoundToFormat` dropped a non-zero bit or had the sticky bit.
+- **Overflow / underflow**: only with an `IeeeFormat` (the precision-only overloads have an
+  unbounded exponent, so they can't). Underflow is tiny *and* inexact; IEEE lets tininess be
+  detected before or after rounding. x86 SSE detects it after; pick one, say which, and test
+  the values between the two definitions.
+- **DivideByZero**: finite non-zero / ±0. **Invalid**: 0 × ∞, ∞ − ∞, 0/0, ∞/∞, sqrt of a
+  negative, remainder(x, 0) or remainder(∞, y), and converting NaN or out-of-range to an integer.
+- NaN in, NaN out raises nothing (quiet NaNs only here: NaN is canonical).
+- The rational oracle (`FloatOracle.Round`) knows exactness, so it can predict every flag.
+  .NET doesn't expose the hardware's flags, so the hardware can't be the oracle for them.
+
+6b, each correctly rounded once, `IeeeFormat` and precision overloads, flags included:
+- `FusedMultiplyAdd(a, b, c)`: the exact product (a significand multiply) plus c, aligned,
+  rounded once. Hardware oracle: `Math.FusedMultiplyAdd` at binary64, `MathF` at binary32.
+- `Floor`, `Ceiling`, `Truncate`, `Round` (ties to even, and `MidpointRounding.AwayFromZero`):
+  IEEE's roundToIntegral. Exact results, so only Inexact (and only for the "-Exact" variants
+  IEEE names). Oracle: `Math.Floor` etc.
+- `IeeeRemainder(x, y)`: x − n·y with n = x/y rounded to nearest even. Always exact. Oracle:
+  `Math.IEEERemainder`, and the rational oracle.
+
+6c:
+- `ApInt.Sqrt` (integer square root): bitwise, digit by digit, two bits at a time with a
+  restoring subtract, like `DivRem` (the project's rule: no CPU multiply). Oracle: BigInteger
+  Newton in the tests; check floor(√n)² ≤ n < (floor(√n)+1)².
+- `ApFloat.Sqrt`: scale the significand to an even exponent with p + 2 bits of root, take the
+  integer root, and the remainder's non-zero is the sticky bit. Oracle: `Math.Sqrt` bit for bit
+  at binary64, and the rational oracle (r² against x, exactly).
+
+Pitfalls to expect: signed zeros (√−0 = −0; FMA's zero sign rules); FMA where a×b and c cancel
+exactly (the sign of zero depends on the mode); the exponent alignment in FMA when c is far
+below a×b (the gap shortcut from Add applies). Mutation plans per piece, as before.
+
+### The rest (from the reference-mode plan's old session 6; see "Order of work" for where each now goes)
 - IEEE status flags: inexact, overflow, underflow, invalid, divide-by-zero. (Order item 3.)
 - `Parse` into an `IeeeFormat`: a bounded range means bounded cost, so 1e400 → ∞ in binary64
   at once. (Order item 4.)

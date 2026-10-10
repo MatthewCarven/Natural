@@ -526,3 +526,51 @@ tightened: a job writing the test hooks (my test's second job happened to put th
 progress ignoring the engine's next round (nothing looked between rounds). A resume that restarts
 from zero hung the suite instead of failing it, since tests loop until the job finishes; every
 such loop is capped now, and it goes red in 7 tests.
+
+## 2026-10-10 — Session 5b: StartFormat, and double dabble as steps
+
+**`x.StartFormat(format, provider, mode)`** returns `Job<string, DecimalCertificate>` and gives
+exactly `x.ToString(format, provider, mode)`: `ToString` now drains the same steps. The formatting
+code moved into `DecimalFormat` (a nested class in `ApFloat.Text.cs`, like 5a's `DecimalParse`):
+`Scaled` (|x| × 10^t to an integer: the engine's steps, or the exact route as one step),
+`ReadBack` (R's check), `Digits` (double dabble), and the formats on top (`DecimalExponent`,
+`SignificantDigits`, `Scientific`, `Fixed`, `General`, `Shortest`, `ReadsBackWith`, `Custom`),
+each an iterator yielding from the ones below. B, A and X are linear and take no steps. The
+custom pattern is parsed once, up front (`CustomPattern`). The format string and the output's
+length are checked when the job is made: F or a custom pattern on a value with more digits before
+the point than a string can hold throws `OverflowException` at once, `ToString` included (it used
+to throw the same type from deep inside `ShiftLeft`). `DecimalCertificate` gained `Scale`, the
+power of ten the printed digits came from, so Low ≤ x × 10^Scale ≤ High; parses keep 0.
+
+**Double dabble as steps**: `ApInt.DecimalStringSteps` counts `2·used + 1` limb steps a bit (the
+two passes over the BCD words, plus one) and yields every 4,096 or a little more, ending on a
+bit; reading the digits out counts one per word. `ApInt.ToString` drains it.
+
+**Measured, old build against new, alternating, three rounds each (Release):**
+- First try: long output got 50% slower (F0 of 1e30000 200 → 300 ms). An iterator keeps its
+  locals in fields, so double dabble's two hot loops ran on memory. They now live in a plain
+  method (`Dabble`) that the iterator calls a step at a time: 197 ms against 197–203 ms.
+- Short formats paid about +0.5 µs at first, from about 20 small objects a call. Keeping each
+  stage's answer in a field instead of a box saved little. Taking the exact route's single step
+  directly in `Scaled`/`ReadBack` (no engine iterator, no closures; one shared
+  `ExactFromTheStart` predicate decides) saved most: now 0.1 default 2.5 µs (same), R 18.5 µs
+  (same), π E6 at 256 bits 1.31 → 1.42 µs, F4 0.75 → 0.90 µs, ApInt 20 digits 0.37 → 0.41 µs.
+
+**Tests**: 555 → 581, `FormatJobTests` (26): job = ToString for 108 values (specials, huge
+exponents, limb-biased randoms at 8 precisions) × 20 formats in random modes, with the
+certificate equal to the hooks where the printed digits come from the last scaling; stepped one
+unit at a time (F0 of ~1e3000, E2500 at 10,000 bits, R at 3,000 bits, a custom pattern), with
+progress low after the first step, between 0.4 and 0.7 at half the work (one-scaling formats),
+and ≥ 0.9 at the end; budgets to the exact step end; F0 of 1e30000 in 10 ms slices against
+BigInteger; double dabble's own count against BigInteger digit counts; certificates bracket
+x × 10^Scale for E, G and R past the cache; errors; hooks; threads. One test first took 17 s:
+a custom pattern on 9.999999e99999 printed all 100,000 digits (2.3 s a call); the every-digit
+formats are listed explicitly now.
+
+**Mutation check**: 17 mutations, 16 red. Two needed the new progress assertions to go red (the
+digits' estimate left out of a scaling's progress, and a flat estimate during double dabble).
+The survivor: the one-shot `ToString` setting the test hooks from the printed scaling instead of
+the last scaling or read-back. That differs only for R and G (shortest), where the last call is
+whichever candidate check ran last, which nothing relies on and no test can sensibly pin. The
+hooks keep the old meaning (the last decimal conversion done); a job's certificate is the
+meaningful record.
