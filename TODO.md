@@ -357,7 +357,22 @@ flags. Today the only route is `Parse(s, 53).WithFormat(IeeeFormat.Binary64)`, w
 (to 53 bits, then again among the subnormals: wrong in the last place for some subnormal
 text), and does the full work for "1e400" before overflowing.
 
-**Ask Matthew first** (one question, with a preview of the calls):
+**Answered (Matthew, 2026-10-11), all three as recommended:**
+1. Static `Parse`/`TryParse(s, IeeeFormat, mode, provider)` with no flags, plus `ieee.Parse(s)`
+   with them.
+2. In a format, an exponent past a long **saturates as `double.Parse` does**: ∞ (or the largest
+   finite, by mode) with Overflow | Inexact, 0 (or the smallest subnormal) with Underflow |
+   Inexact, and a zero mantissa stays an exact zero. `Parse(s, precision)` keeps throwing.
+3. `StartParse(s, IeeeFormat, mode)` too, now.
+
+Found reading the engine before asking: **its acceptance must also agree on the range flags.**
+Two ends that round to the same format value can still differ on tininess (just under 2^emin:
+one tiny at the precision, the other rounding up to it) or on overflow (toward zero, both give
+the largest finite). So in a format the ends must agree on value, tiny and overflow. Measured
+first: `Parse(s, 53).WithFormat(Binary64)` of the text just above 5·2^-1075 gives 2·2^-1074,
+`double.Parse` 3·2^-1074 (the double rounding is real). 1e±10^18 costs 5.9 ms at 53 bits today.
+
+The question as it was put (one question, with a preview of the calls):
 - Shape. Recommended: `ApFloat.Parse(s, IeeeFormat format, RoundingMode mode = ToNearestEven,
   IFormatProvider? provider = null)` and `TryParse` to match, plus `ieee.Parse(s)` on the context
   raising Inexact / Overflow / Underflow (IEEE's convertFromDecimalCharacter). That's the same
