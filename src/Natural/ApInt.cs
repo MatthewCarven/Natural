@@ -172,6 +172,71 @@ public readonly partial struct ApInt : IEquatable<ApInt>, IComparable<ApInt>, IC
         return (new(root, false), new(remainder, false));
     }
 
+    /// <summary>value^exponent, by square-and-multiply. Pow(0, 0) is 1, as with BigInteger.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">The exponent is negative.</exception>
+    public static ApInt Pow(ApInt value, int exponent)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(exponent);
+        uint[] result = [1], square = value.Mag;
+        for (int e = exponent; e > 0; e >>= 1)
+        {
+            if ((e & 1) != 0) result = Magnitude.Multiply(result, square);
+            if (e > 1) square = Magnitude.Multiply(square, square);
+        }
+        return new(result, value._negative && (exponent & 1) != 0);
+    }
+
+    /// <summary>
+    /// (value^exponent) % modulus, without ever building value^exponent: square-and-multiply,
+    /// reduced after every product. Exactly BigInteger.ModPow: the result takes value^exponent's
+    /// sign, as C#'s % does (so ModPow(-2, 3, 5) is -3), and the modulus's sign is ignored.
+    /// (Matthew's choice, 2026-10-11.)
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The exponent is negative.</exception>
+    /// <exception cref="DivideByZeroException">The modulus is zero.</exception>
+    public static ApInt ModPow(ApInt value, ApInt exponent, ApInt modulus)
+    {
+        if (exponent._negative) throw new ArgumentOutOfRangeException(nameof(exponent), "The exponent must not be negative.");
+        if (modulus.IsZero) throw new DivideByZeroException();
+        uint[] result = Magnitude.ModPow(value.Mag, exponent.Mag, modulus.Mag);
+        return new(result, value._negative && Magnitude.TestBit(exponent.Mag, 0));
+    }
+
+    /// <summary>The greatest common divisor of |left| and |right|, never negative; (0, 0) gives 0. Stein's binary method.</summary>
+    public static ApInt GreatestCommonDivisor(ApInt left, ApInt right) =>
+        new(Magnitude.Gcd(left.Mag, right.Mag), false);
+
+    // ------------------------------------------------------------------
+    // Bitwise operators: two's complement, as BigInteger (a negative is 1s running on up forever)
+    // ------------------------------------------------------------------
+
+    public static ApInt operator &(ApInt a, ApInt b) => Bitwise(a, b, '&');
+    public static ApInt operator |(ApInt a, ApInt b) => Bitwise(a, b, '|');
+    public static ApInt operator ^(ApInt a, ApInt b) => Bitwise(a, b, '^');
+
+    /// <summary>Every bit flipped, all the way up: -a - 1, so ~5 is -6 and ~-1 is 0.</summary>
+    public static ApInt operator ~(ApInt a) => -a - One;
+
+    /// <summary>
+    /// Both operands as two's complement one limb longer than the longer, so even the longer has
+    /// room for its sign; the operation limb by limb; then back, the top bit giving the sign.
+    /// </summary>
+    private static ApInt Bitwise(ApInt a, ApInt b, char op)
+    {
+        int limbs = Math.Max(a.Mag.Length, b.Mag.Length) + 1;
+        uint[] x = Magnitude.ToTwosComplement(a.Mag, a._negative, limbs);
+        uint[] y = Magnitude.ToTwosComplement(b.Mag, b._negative, limbs);
+        var bits = new uint[limbs];
+        switch (op)
+        {
+            case '&': for (int i = 0; i < limbs; i++) bits[i] = x[i] & y[i]; break;
+            case '|': for (int i = 0; i < limbs; i++) bits[i] = x[i] | y[i]; break;
+            default: for (int i = 0; i < limbs; i++) bits[i] = x[i] ^ y[i]; break;
+        }
+        uint[] mag = Magnitude.FromTwosComplement(bits, out bool negative);
+        return new(mag, negative);
+    }
+
     public static ApInt operator ++(ApInt a) => a + One;
     public static ApInt operator --(ApInt a) => a - One;
 

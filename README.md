@@ -49,6 +49,19 @@ floors, exactly as with `long`:
 ((ApInt)(-7)) >> 1;    // -4
 ```
 
+The bitwise operators are two's complement, as with `BigInteger` (a negative number has 1s
+running on up forever), and `Pow`, `ModPow` and `GreatestCommonDivisor` have `BigInteger`'s names
+and meanings:
+
+```csharp
+((ApInt)(-6)) & 7;                          // 2
+~(ApInt)5;                                  // -6
+ApInt.Pow(3, 100);                          // 515377520732011331036461129765621272702107522001
+ApInt.ModPow(-2, 3, 5);                     // -3: the base's sign, as % and BigInteger.ModPow
+ApInt.ModPow(2, ApInt.One << 200, 1000);    // 2^(2^200) mod 1000, without building 2^(2^200)
+ApInt.GreatestCommonDivisor(-12, 18);       // 6, by Stein's binary method: shifts and subtraction
+```
+
 ```csharp
 ApFloat x = ApFloat.Parse("0.1");     // 256 bits by default
 ApFloat y = ApFloat.Parse("0.2");
@@ -258,7 +271,7 @@ that yield-returns the work it just did can be a job.
 
 ## How it is tested
 
-643 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
+657 tests, `dotnet test Natural.slnx`. Three independent oracles, none of which shares code
 with the thing under test:
 
 - **`BigInteger`**, converted through raw magnitude bytes so the arithmetic tests don't
@@ -281,7 +294,7 @@ result is computed exactly and rounded exactly once, at a precision you choose.
 ## Build
 
 ```
-dotnet test Natural.slnx                                        # 643 tests
+dotnet test Natural.slnx                                        # 657 tests
 dotnet run -c Release tests/bench/timing.cs                     # decimal text timings
 ```
 
@@ -313,9 +326,9 @@ Natural_Playground/     a WinForms calculator that takes results apart
 
 Arbitrary-precision integers and binary floats are implemented and tested, with IEEE status
 flags, fused multiply-add, square roots (`ApInt` and `ApFloat`), rounding to integers and the
-remainder, parsing straight into an IEEE format, and long parsing and formatting run as
-resumable jobs. Not yet built, in the order they are planned: `ApInt` bitwise
-operators then `Pow`/`ModPow`/`Gcd`; generic math interfaces; speed; transcendentals.
+remainder, parsing straight into an IEEE format, long parsing and formatting run as resumable
+jobs, and `ApInt`'s bitwise operators, `Pow`, `ModPow` and `GreatestCommonDivisor`. Not yet
+built, in the order they are planned: generic math interfaces; speed; transcendentals.
 
 See `TODO.md` for the full list and `CLAUDE.md` for the layout and conventions in more
 detail.

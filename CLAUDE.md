@@ -17,8 +17,14 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   subtract is `a + ~b + 1`; multiply is shift-and-add; divide is restoring
   binary long division (shift in a bit, subtract if it fits), in place; the square root is
   the same digit by digit, two bits at a time (subtract 4r + 1 if it fits), in place too.
+  `ModPow` is square-and-multiply reduced after every product (ApFloat's remainder uses it for
+  2^k mod 2Y); `Gcd` is Stein's binary method (shifts and subtraction, no division);
+  `ToTwosComplement`/`FromTwosComplement` serve ApInt's bitwise operators.
 - `src/Natural/ApInt.cs` — the public struct: sign + magnitude, operators,
-  conversions, comparison. `default(ApInt)` is zero; there is no negative zero.
+  conversions, comparison. `default(ApInt)` is zero; there is no negative zero. `Sqrt`/`SqrtRem`,
+  `Pow`, `ModPow` (the base's sign, as `BigInteger.ModPow`: Matthew's choice),
+  `GreatestCommonDivisor`, and `&`, `|`, `^`, `~` with `BigInteger`'s two's-complement meaning
+  (both operands one limb longer than the longer, so each has room for its sign).
 - `src/Natural/ApInt.Text.cs` — parse (decimal via `x*10 = (x<<3)+(x<<1)`, hex,
   binary) and format (decimal via double dabble, eight BCD digits per `uint`).
 - `src/Natural/ApFloat.cs` — IEEE-style arbitrary-precision float: ±m × 2^e, m odd,
@@ -102,6 +108,9 @@ bitwise primitives), and `BigInteger` appears only in the tests, as the oracle.
   the float root against `Math.Sqrt`, `MathF.Sqrt` and every `Half`. In every mode and format it
   uses `FloatOracle.SqrtOf`, a rational that rounds exactly as the irrational root does. A
   squaring check (x between the squared rounding boundaries around the result) takes no root at all.
+  `BitsAndPowersTests.cs` checks the bitwise operators, `Pow`, `ModPow` and `GreatestCommonDivisor`
+  against `BigInteger` (operands of both signs, some exactly ±2^(32k), whose |x| − 1 borrows through
+  every limb) and against long's own operators on every pair of edge values.
   `ParseFormatTests.cs` checks parsing into a format against `double.Parse`, `float.Parse` and
   `Half.Parse` bit for bit, and against the text's exact rational (`EncodeRational`,
   `RoundingFlags`) in every mode and format. Its texts include midpoints written out in full and a

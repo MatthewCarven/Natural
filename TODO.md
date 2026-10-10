@@ -13,10 +13,11 @@
    and 6c (square roots) 2026-10-11.
 4. ~~**Parse into an `IeeeFormat`**: small, and for very wide formats it uses 4's engine.~~
    Done: session 7, 2026-10-11.
-5. **`ApInt` bitwise operators** (`&`, `|`, `^`, `~`), then `Pow`, `ModPow`, `Gcd`.
-   **Next: session 8**; brief below, after session 7.
+5. ~~**`ApInt` bitwise operators** (`&`, `|`, `^`, `~`), then `Pow`, `ModPow`, `Gcd`.~~
+   Done: session 8, 2026-10-11.
 6. **Generic math**: `INumber<ApInt>` / `IBinaryInteger<ApInt>` (needs 5), `INumber<ApFloat>`
-   (needs 3).
+   (needs 3). **Next: session 9**; brief below, after session 8. (Found 2026-10-11: plain
+   `IFloatingPoint<ApFloat>` needs E, π and τ, so it waits for item 8 as item 9 does.)
 7. **Speed**: Karatsuba plus a dedicated squaring, and a bit-parallel adder, all still
    bitwise. Measure first: after 4, the exact route mostly runs only on ties.
 8. **Transcendentals** (exp, log, sin, π), streaming digits, million-digit constants.
@@ -431,7 +432,12 @@ Mutations to plan: the engine's ends rounded to the precision rather than into t
 double rounding), the early-out margins too tight, Inexact taken from the engine instead of from
 exactness, hex text skipping the format, tininess judged before rounding.
 
-### Session 8 — `ApInt` bitwise operators, then `Pow`, `ModPow`, `Gcd` (order item 5): brief for a fresh chat
+### Session 8 — `ApInt` bitwise operators, then `Pow`, `ModPow`, `Gcd` (order item 5): done 2026-10-11
+- [x] `&`, `|`, `^`, `~` (two's complement, as BigInteger), `Pow`, `ModPow` (the base's sign),
+      `GreatestCommonDivisor` (Stein's). ApFloat's remainder shares `Magnitude.ModPow`.
+- [x] 643 → 657 tests; mutations: see WORKLOG.
+
+The brief, kept for reference:
 Goal: `&`, `|`, `^`, `~` on `ApInt` with `BigInteger`'s two's-complement meaning (a negative is
 an infinite run of 1s on the left), then `Pow(ApInt, int)`, `ModPow(value, exponent, modulus)`,
 `Gcd(a, b)`. Order item 6 (generic math, `IBinaryInteger<ApInt>`) needs all of them next, so take
@@ -479,6 +485,48 @@ swapped (`&` of two negatives is negative, `|` with any negative is negative, `^
 negative), `~` as plain negation, ModPow's sign, Pow's sign for an odd exponent, Gcd's power of two
 lost, Gcd of a negative coming back negative.
 
+### Session 9 — generic math (order item 6): brief for a fresh chat
+Goal: `ApInt : IBinaryInteger<ApInt>, ISignedNumber<ApInt>` (9a), then `ApFloat : INumber<ApFloat>,
+ISignedNumber<ApFloat>` (9b), so generic code (`T.Sqrt`, `INumber<T>` algorithms, LINQ's `Sum`) runs
+on them. **Let the compiler list the members**: declare the interfaces, build, and read the CS0535
+errors (2026-10-11 probe: 79 members for the integer set and 78 for `IFloatingPoint` +
+`IRootFunctions`, many already present). Split 9a and 9b into two sessions if it's long.
+
+**Measured on .NET 10 (2026-10-11), and the reason for the question below.** `BigInteger`'s
+generic-math bit operations depend on its internal 32-bit words, not on the value alone:
+`-16 >>> 2` = 1073741820 (−16 treated as one 32-bit word, shifted unsigned); `PopCount(-1)` = 32,
+`PopCount(-16)` = 28; `TrailingZeroCount(0)` = 32; `LeadingZeroCount(1)` = 31,
+`LeadingZeroCount(-1)` = 0; `RotateLeft(1, 40)` = 256 (it rotates within 32 bits); `GetByteCount(128)`
+= `GetByteCount(-128)` = 4; `GetShortestBitLength(-128)` = 8; `Log2(0)` = 0, `Log2(-8)` throws;
+`IsPow2(-8)` false. Saturating and truncating conversions are ordinary: `int.CreateSaturating(2^70)` =
+int.MaxValue, `int.CreateTruncating(2^70 + 5)` = 5.
+
+**Ask Matthew first** (one question, with that table as the preview): whether `ApInt` copies
+`BigInteger`'s word-width answers (ApInt's limbs are also 32 bits, so it can, bit for bit) or gives
+width-free ones. Width-free would mean, for example, `PopCount` of a negative throws (infinitely many
+1s), `>>>` equals `>>`, and rotations throw or act as shifts. Recommend copying `BigInteger`:
+generic code tested against BigInteger then behaves the same, and the quirks are documented .NET
+behaviour. Say plainly that they're odd. Decide the rest by .NET's behaviour.
+
+Found by the probe, for 9b and the order of work:
+- **`IFloatingPoint<T>` requires `IFloatingPointConstants`: E, Pi and Tau.** So even plain
+  `IFloatingPoint<ApFloat>` needs order item 8's constants, not only `IFloatingPointIeee754` (item 9).
+  For 9b, implement `INumber<ApFloat>` (+ `ISignedNumber`, and `IRootFunctions` if wanted) and leave
+  `IFloatingPoint` with item 8. Tell Matthew, since it changes items 8 and 9's order of dependency.
+- `INumber<T>` needs `%` on ApFloat: C#'s % for doubles is the truncated remainder (`-7.5 % 2` =
+  −1.5), not `Ieee754Remainder`. It's exact, like 6b's remainder (the same X mod Y on a common grid,
+  without the rounding to nearest), so the same 2^k mod Y trick applies.
+- `IRootFunctions` needs `Cbrt`, `RootN` and `Hypot` besides `Sqrt`. Hypot is exact x² + y² then one
+  rounded square root, which is easy. Cbrt and RootN need an integer n-th root: the digit-by-digit
+  idea generalises, but it's a session of its own. Leave them unless Matthew wants them.
+- `INumberBase` wants `Parse`/`TryParse` over spans with `NumberStyles`, `TryFormat` (spans), and the
+  six `TryConvert{From,To}{Checked,Saturating,Truncating}` for the other numeric types. Those last
+  are the bulk of 9a; test each against `BigInteger`'s own on biased values.
+
+Oracles: `BigInteger` for every ApInt member (its generic-math statics, through the interface where
+needed), and a generic method run on both (`static T SumOfSquares<T>(...) where T : INumber<T>`).
+For ApFloat, double through the interface at 53 bits, plus the rational oracle.
+
 ### The rest (from the reference-mode plan's old session 6; see "Order of work" for where each now goes)
 - ~~IEEE status flags: inexact, overflow, underflow, invalid, divide-by-zero.~~ Done in 6a.
 - `Parse` into an `IeeeFormat`: a bounded range means bounded cost, so 1e400 → ∞ in binary64
@@ -506,9 +554,9 @@ lost, Gcd of a negative coming back negative.
       (the "precision" half of the name). This became ApFloat (2026-09-30).
 
 ## Later
-- [ ] Bitwise operators on `ApInt` (`&`, `|`, `^`, `~`) — two's-complement
-      semantics for negatives, to match `BigInteger`. (Order item 5.)
-- [ ] `Pow`, `ModPow`, `Gcd` (order item 5). (Integer `Sqrt` and `SqrtRem` came with 6c.)
+- [x] Bitwise operators on `ApInt` (`&`, `|`, `^`, `~`) — two's-complement
+      semantics for negatives, to match `BigInteger`. (Order item 5: session 8.)
+- [x] `Pow`, `ModPow`, `GreatestCommonDivisor` (order item 5, session 8). (Integer `Sqrt` and `SqrtRem` came with 6c.)
 - [ ] Speed, if it ever matters: Karatsuba multiply; a bit-parallel adder that
       doesn't loop per carry. Keep the bitwise-only rule. (Order item 7: the same item as
       the Karatsuba line under the reference mode's "The rest".)

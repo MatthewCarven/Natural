@@ -194,8 +194,10 @@ public readonly partial struct ApFloat
         long e = Math.Min(x._exp, y._exp);
         uint[] Y = Magnitude.ShiftLeft(y.Mant, y._exp - e);
         uint[] twoY = Magnitude.ShiftLeft(Y, 1);
-        uint[] mx = Mod(x.Mant, twoY);
-        uint[] xMod2Y = Mod(Magnitude.Multiply(mx, PowerOfTwoMod(x._exp - e, twoY)), twoY);
+        uint[] mx = Magnitude.Mod(x.Mant, twoY);
+        ulong k = (ulong)(x._exp - e);
+        uint[] twoToK = Magnitude.ModPow([2], Magnitude.Trim([(uint)k, (uint)(k >> 32)]), twoY);
+        uint[] xMod2Y = Magnitude.Mod(Magnitude.Multiply(mx, twoToK), twoY);
 
         bool quotientOdd = Magnitude.Compare(xMod2Y, Y) >= 0;
         uint[] rem = quotientOdd ? Magnitude.Subtract(xMod2Y, Y) : xMod2Y;     // X mod Y
@@ -207,25 +209,6 @@ public readonly partial struct ApFloat
         bool negative = x._negative ^ up;
         if (magnitude.Length == 0) return ZeroOf(x._negative, precision);    // exact: the sign is x's
         return Normalised(negative, magnitude, e, precision);
-    }
-
-    /// <summary>a mod m, for a magnitude m &gt; 0.</summary>
-    private static uint[] Mod(uint[] a, uint[] m)
-    {
-        Magnitude.DivRem(a, m, out uint[] remainder);
-        return remainder;
-    }
-
-    /// <summary>2^k mod m, by square-and-multiply: k may be in the billions, m stays small.</summary>
-    private static uint[] PowerOfTwoMod(long k, uint[] m)
-    {
-        uint[] result = Mod([1], m), square = Mod([2], m);
-        for (; k > 0; k >>= 1)
-        {
-            if ((k & 1) != 0) result = Mod(Magnitude.Multiply(result, square), m);
-            if (k > 1) square = Mod(Magnitude.Multiply(square, square), m);
-        }
-        return result;
     }
 
     /// <summary>The same value with a different precision field, for a value known to fit it.</summary>

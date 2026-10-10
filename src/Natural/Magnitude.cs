@@ -220,6 +220,86 @@ internal static class Magnitude
         trial[r.Length] = spill;
     }
 
+    /// <summary>a mod m, for m non-zero.</summary>
+    internal static uint[] Mod(uint[] a, uint[] m)
+    {
+        DivRem(a, m, out uint[] remainder);
+        return remainder;
+    }
+
+    /// <summary>
+    /// value^exponent mod m, by square-and-multiply, reducing after every product, so nothing
+    /// grows past twice m's length however long the exponent is. m must be non-zero; 0^0 is 1
+    /// (mod m).
+    /// </summary>
+    internal static uint[] ModPow(uint[] value, uint[] exponent, uint[] m)
+    {
+        uint[] result = Mod([1], m), square = Mod(value, m);
+        long bits = BitLength(exponent);
+        for (long i = 0; i < bits; i++)
+        {
+            if (TestBit(exponent, i)) result = Mod(Multiply(result, square), m);
+            if (i + 1 < bits) square = Mod(Multiply(square, square), m);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// The greatest common divisor, by Stein's binary method: only shifts, subtraction and
+    /// comparison, no division. The power of two they share comes out first; then, with both
+    /// odd, the larger minus the smaller is even and shares every odd divisor, so subtract and
+    /// strip its zeros until the two meet. gcd(a, 0) is a, and gcd(0, 0) is 0.
+    /// </summary>
+    internal static uint[] Gcd(uint[] a, uint[] b)
+    {
+        if (a.Length == 0) return b;
+        if (b.Length == 0) return a;
+        long za = TrailingZeroCount(a), zb = TrailingZeroCount(b);
+        a = ShiftRight(a, za);
+        b = ShiftRight(b, zb);
+        while (true)
+        {
+            int cmp = Compare(a, b);
+            if (cmp == 0) return ShiftLeft(a, Math.Min(za, zb));
+            if (cmp < 0) (a, b) = (b, a);
+            a = Subtract(a, b);
+            a = ShiftRight(a, TrailingZeroCount(a));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Two's complement, for the bitwise operators
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// ±mag as <paramref name="limbs"/> limbs of two's complement, sign-extended: mag itself when
+    /// it's not negative, and ~(mag − 1) when it is (the bits of −mag, with 1s running on up).
+    /// There must be room for the sign: at least one limb more than mag.
+    /// </summary>
+    internal static uint[] ToTwosComplement(uint[] mag, bool negative, int limbs)
+    {
+        var bits = new uint[limbs];
+        if (!negative)
+        {
+            Array.Copy(mag, bits, mag.Length);
+            return bits;
+        }
+        uint[] less = Subtract(mag, [1]);
+        for (int i = 0; i < limbs; i++)
+            bits[i] = ~(i < less.Length ? less[i] : 0u);
+        return bits;
+    }
+
+    /// <summary>Two's complement back to sign and magnitude: the top bit is the sign, and −x is ~x + 1.</summary>
+    internal static uint[] FromTwosComplement(uint[] bits, out bool negative)
+    {
+        negative = (bits[^1] >> 31) != 0;
+        if (!negative) return Trim(bits);
+        var flipped = new uint[bits.Length];
+        for (int i = 0; i < bits.Length; i++) flipped[i] = ~bits[i];
+        return Add(Trim(flipped), [1]);
+    }
+
     /// <summary>a = (a &lt;&lt; 1) | bit, in place; the bit shifted off the top is dropped.</summary>
     private static void ShiftLeftOneInPlace(uint[] a, uint bit)
     {

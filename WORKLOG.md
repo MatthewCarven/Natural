@@ -815,3 +815,56 @@ red. Red from the start:
   its precision.
 
 The fast phase held (13–19 s a run).
+
+## 2026-10-11 — Session 8: ApInt's bitwise operators, Pow, ModPow, GreatestCommonDivisor
+
+One question, and Matthew took the recommendation: **ModPow takes the base's sign, exactly as
+`BigInteger.ModPow`**: (value^exponent) % modulus with C#'s %, the modulus's sign ignored, never a
+negative zero. Decided and reported: `GreatestCommonDivisor`, .NET's name, not the brief's `Gcd`
+(generic math is next and wants .NET's names). Measured first, on .NET 10: ModPow(-2, 3, 5) = -3,
+ModPow(2, 3, -5) = 3, ModPow(5, 0, 1) = 0, ModPow(-10, 3, 5) = 0; a negative exponent throws
+ArgumentOutOfRangeException and a zero modulus DivideByZeroException; Pow(0, 0) = 1; Gcd(0, 0) = 0.
+
+- **`&`, `|`, `^`** turn both operands into two's complement, one limb longer than the longer (so
+  each has room for its sign), apply the word operation, and turn the result back from its top
+  bit. A negative is ~(|x| − 1), sign-extended. Back again, −r is ~r + 1. The two's complement
+  helpers are in `Magnitude`. **`~x`** is −x − 1.
+- **`Pow(value, int)`**: square-and-multiply, skipping the last squaring. The sign is negative for
+  a negative base and an odd exponent.
+- **`ModPow`**: `Magnitude.ModPow`, square-and-multiply reduced after every product. ApFloat's
+  remainder now uses it for 2^k mod 2Y, in place of its own private copy of the same loop
+  (`PowerOfTwoMod`, from 6b). All of 6b's remainder tests stayed green.
+- **`GreatestCommonDivisor`**: Stein's binary method in `Magnitude.Gcd`. The shared power of two
+  comes out first; with both odd, the larger minus the smaller is even and keeps every odd divisor,
+  so subtract, strip zeros, repeat. No division, which suits the project's rule.
+
+**Tests**: 643 → 657, `BitsAndPowersTests` (14). They cover:
+- `&`, `|`, `^`, `~` against long's own operators on every pair of 29 edge longs (limb edges,
+  ±2^31, ±2^32, long's ends, alternating bits).
+- `&`, `|`, `^`, `~` against `BigInteger` on 6,000 pairs of biased operands of both signs, an eighth
+  of them exactly ±2^(32k) (or one less), where |x| − 1 borrows through every limb.
+- Identities: x ^ x = 0, x | ~x = −1, ~~x = x, x + y = (x ^ y) + ((x & y) << 1), and x & −x being
+  the lowest set bit.
+- `Pow` and `ModPow` against `BigInteger` (moduli ±1, small, and biased both signs; exponents up to
+  two limbs), the known values above, and 2^(2^200) mod 2^127 − 1.
+- `GreatestCommonDivisor` against `BigInteger` on pairs given a shared factor and a shared power of
+  two half the time, so the answer isn't nearly always 1.
+
+**Found writing the next brief: `BigInteger`'s generic-math bit operations depend on its 32-bit
+words.** `-16 >>> 2` is 1073741820, `PopCount(-1)` is 32, `TrailingZeroCount(0)` is 32,
+`RotateLeft(1, 40)` is 256. Whether ApInt copies that is session 9's question. And a probe that
+declares the interfaces and lets the compiler list what's missing showed that **`IFloatingPoint<T>`
+itself needs E, π and τ** (`IFloatingPointConstants`), not just `IFloatingPointIeee754`: so
+`IFloatingPoint<ApFloat>` waits for order item 8, while `INumber<ApFloat>` doesn't.
+
+**Mutation check**: 16 mutations, all red:
+- two's complement: a negative as ~|x| (no borrow), a non-negative operand not copied, no room for
+  the sign, back again without the +1, results never negative, `~` as plain negation;
+- `Pow` and `ModPow`: each one's sign ignoring the exponent's parity, each one taking a negative
+  exponent, `ModPow`'s 1 not reduced (so mod 1 gave 1);
+- the remainder's 2^k losing k's high word (6b's 2^(10^12) test caught it);
+- the GCD: the shared power of two lost, the larger kept, gcd(0, b) = 0, left's sign kept.
+
+Three I didn't run, as equivalent by construction: reading the sign from bit 30 (the extra limb
+makes the top limb all 0s or all 1s); skipping the first reduction in `ModPow` (every product is
+reduced anyway); an extra final squaring in `Pow`.
