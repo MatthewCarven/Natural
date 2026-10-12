@@ -501,7 +501,11 @@ generic-math bit operations depend on its internal 32-bit words, not on the valu
 `IsPow2(-8)` false. Saturating and truncating conversions are ordinary: `int.CreateSaturating(2^70)` =
 int.MaxValue, `int.CreateTruncating(2^70 + 5)` = 5.
 
-**Ask Matthew first** (one question, with that table as the preview): whether `ApInt` copies
+**Answered (Matthew, 2026-10-12): copy `BigInteger`'s answers, bit for bit**, the 32-bit-word
+quirks included (`PopCount(-1)` = 32, `RotateLeft(1, 40)` = 256, `-16 >>> 2` = 1073741820, ...).
+The oracle for every bit member is `BigInteger`'s own, through the interface.
+
+The question as it was put (one question, with that table as the preview): whether `ApInt` copies
 `BigInteger`'s word-width answers (ApInt's limbs are also 32 bits, so it can, bit for bit) or gives
 width-free ones. Width-free would mean, for example, `PopCount` of a negative throws (infinitely many
 1s), `>>>` equals `>>`, and rotations throw or act as shifts. Recommend copying `BigInteger`:
