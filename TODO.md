@@ -505,6 +505,16 @@ int.MaxValue, `int.CreateTruncating(2^70 + 5)` = 5.
 quirks included (`PopCount(-1)` = 32, `RotateLeft(1, 40)` = 256, `-16 >>> 2` = 1073741820, ...).
 The oracle for every bit member is `BigInteger`'s own, through the interface.
 
+**Answered (Matthew, 2026-10-12): hex and binary text become two's complement, as `BigInteger`.**
+"X"/"B" output (−255 → "F01", 255 → "0FF", −1 → "F", −5 "X8" → "FFFFFFFB") and
+NumberStyles.HexNumber/BinaryNumber parsing ("FF" → −1). ApInt's own `Parse(string)` keeps its
+"0x"/"0b"/underscore syntax unchanged (BigInteger rejects that syntax, so nothing clashes).
+Decided and reported: conversions to double/float/Half are **correctly rounded**, unlike
+`BigInteger`'s. Measured: (2^53 + 1)·2^20 + 1 is just above a midpoint and should round up to
+2^73 + 2^21, but `(double)BigInteger` gives 2^73. So the tests use ApFloat or the rational oracle
+there, not BigInteger. Also measured: `BigInteger.CreateSaturating(+∞)` throws OverflowException,
+NaN saturates/truncates to 0, CreateChecked(NaN) throws, and CreateChecked(-2.7) is −2.
+
 The question as it was put (one question, with that table as the preview): whether `ApInt` copies
 `BigInteger`'s word-width answers (ApInt's limbs are also 32 bits, so it can, bit for bit) or gives
 width-free ones. Width-free would mean, for example, `PopCount` of a negative throws (infinitely many
